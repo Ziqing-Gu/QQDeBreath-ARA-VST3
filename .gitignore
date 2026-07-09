@@ -1,0 +1,17 @@
+build*/
+build-vs/
+build-local/
+*_artefacts/
+.vs/
+.vscode/
+*.user
+*.suo
+*.vcxproj.user
+*.log
+*.tmp
+*.pyc
+__pycache__/
+dist/
+out/
+temp/
+*.vst3/
