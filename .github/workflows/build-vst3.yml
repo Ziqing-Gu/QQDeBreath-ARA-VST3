@@ -39,7 +39,7 @@ jobs:
           test -n "$plugin_path"
           binary="$plugin_path/Contents/MacOS/QQDeBreath"
           lipo -archs "$binary" | tee QQDeBreath-macOS-architectures.txt
-          lipo -verify_arch x86_64 arm64 "$binary"
+          lipo "$binary" -verify_arch x86_64 arm64
           codesign --force --deep --sign - "$plugin_path"
           ditto -c -k --sequesterRsrc --keepParent "$plugin_path" QQDeBreath-macOS-Universal-1.09.zip
 
