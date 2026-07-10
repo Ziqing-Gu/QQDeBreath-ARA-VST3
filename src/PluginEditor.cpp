@@ -424,7 +424,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
         sourceMode = SourceMode::recorded;
         araSourceInfo = {};
         audioProcessor.startRecording();
-        lastExportedFile = {};
+        lastExportedFile = juce::File();
         updateRecordingInfo();
     };
     addAndMakeVisible(recordButton);
@@ -443,7 +443,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
         audioProcessor.clearRecording();
         if (sourceMode == SourceMode::recorded)
             sourceMode = SourceMode::none;
-        lastExportedFile = {};
+        lastExportedFile = juce::File();
         lastDisplayedRecordedSamples = 0;
         lastWaveformRefreshMs = 0;
         showingLiveRecordingPreview = false;
@@ -1815,7 +1815,7 @@ void QQDeBreathAudioProcessorEditor::refreshRecordedWaveformIfNeeded(const QQDeB
     {
         showingLiveRecordingPreview = true;
         lastWaveformRefreshMs = now;
-        lastExportedFile = {};
+        lastExportedFile = juce::File();
         return;
     }
 
@@ -1834,7 +1834,7 @@ void QQDeBreathAudioProcessorEditor::refreshRecordedWaveformIfNeeded(const QQDeB
         lastDisplayedRecordedSamples = info.numSamples;
         lastWaveformRefreshMs = now;
         showingLiveRecordingPreview = isLiveCapture;
-        lastExportedFile = {};
+        lastExportedFile = juce::File();
     }
 }
 
