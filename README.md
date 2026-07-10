@@ -15,9 +15,9 @@ compatibility with earlier QQDeBreath project data.
 
 ## Version
 
-Current plugin version: `ARA 1.06`
+Current plugin version: `ARA 1.09`
 
-ARA 1.06 contains the native C++ Breath detection path and focuses on the Breath
+ARA 1.09 contains the native C++ Breath detection path and retains the Breath
 EQ workflow: multi-event ARA Load, dynamic Pre/Post spectrum display, loop
 preview, a main-page EQ enable checkbox, Global Gain, Set as Default, and
 per-Breath Adjust/EQ controls.
@@ -115,6 +115,15 @@ ARA mode:
 
 Plain VST3 mode:
 
+- Re-arming Record performs timeline punch-in: overlapping samples are
+  overwritten while previously recorded, non-overlapping positions are kept.
+- Recording storage is preallocated in large blocks to avoid per-audio-block
+  buffer growth on the realtime thread.
+- Reaper regular VST3 instances are detected from the processor's actual ARA
+  binding, so they keep the Record workflow instead of showing the ARA page.
+- ARA playback resamples source audio to the host playback sample rate, avoiding
+  silence when the source and Reaper project use different sample rates.
+
 1. Insert QQDeBreath as a VST3 plugin.
 2. Click `Record`.
 3. Play the DAW timeline; recording starts with DAW playback.
@@ -165,6 +174,13 @@ The installed VST3 path is usually:
 C:\Program Files\Common Files\VST3\QQDeBreath.vst3
 ```
 
+GitHub Actions also builds:
+
+- `QQDeBreath-Windows-x64-1.09`
+- `QQDeBreath-macOS-Universal-1.09` (`x86_64` + `arm64`)
+
+The macOS artifact is ad-hoc signed for testing, but it is not Apple Developer
+ID signed or notarized.
 ## Non-Commercial License Notice
 
 This repository is released for learning, review, personal use, research, and

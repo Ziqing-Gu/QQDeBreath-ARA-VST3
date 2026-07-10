@@ -1,0 +1,84 @@
+name: Build VST3
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "CMakeLists.txt"
+      - "src/**"
+      - "external/ARA_SDK"
+      - ".gitmodules"
+      - ".github/workflows/build-vst3.yml"
+
+jobs:
+  macos-universal:
+    name: macOS Universal VST3
+    runs-on: macos-15-intel
+    steps:
+      - name: Checkout source and ARA SDK
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Configure Universal build
+        run: |
+          cmake -S . -B build-macos -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DQQDEBREATH_COPY_AFTER_BUILD=OFF
+
+      - name: Build VST3
+        run: cmake --build build-macos --config Release --target QQDeBreath_VST3 --parallel 3
+
+      - name: Verify, sign, and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_path="$(find build-macos -type d -name QQDeBreath.vst3 -path '*Release*' | head -n 1)"
+          test -n "$plugin_path"
+          binary="$plugin_path/Contents/MacOS/QQDeBreath"
+          lipo -archs "$binary" | tee QQDeBreath-macOS-architectures.txt
+          lipo -verify_arch x86_64 arm64 "$binary"
+          codesign --force --deep --sign - "$plugin_path"
+          ditto -c -k --sequesterRsrc --keepParent "$plugin_path" QQDeBreath-macOS-Universal-1.09.zip
+
+      - name: Upload macOS Universal VST3
+        uses: actions/upload-artifact@v7
+        with:
+          name: QQDeBreath-macOS-Universal-1.09
+          path: |
+            QQDeBreath-macOS-Universal-1.09.zip
+            QQDeBreath-macOS-architectures.txt
+          if-no-files-found: error
+
+  windows-x64:
+    name: Windows x64 VST3
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source and ARA SDK
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: cmake -S . -B build-windows -A x64 -DQQDEBREATH_COPY_AFTER_BUILD=OFF
+
+      - name: Build VST3
+        run: cmake --build build-windows --config Release --target QQDeBreath_VST3 --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $plugin = Get-ChildItem -Path build-windows -Directory -Recurse -Filter QQDeBreath.vst3 |
+            Where-Object { $_.FullName -match 'Release' } |
+            Select-Object -First 1
+          if ($null -eq $plugin) { throw 'QQDeBreath.vst3 was not produced.' }
+          Compress-Archive -LiteralPath $plugin.FullName -DestinationPath QQDeBreath-Windows-x64-1.09.zip
+
+      - name: Upload Windows VST3
+        uses: actions/upload-artifact@v7
+        with:
+          name: QQDeBreath-Windows-x64-1.09
+          path: QQDeBreath-Windows-x64-1.09.zip
+          if-no-files-found: error

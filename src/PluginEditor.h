@@ -290,6 +290,7 @@ private:
     juce::ToggleButton breathEqLoopButton { "Loop" };
     juce::ToggleButton breathEqAutoApplyButton { "Auto Apply" };
     juce::TextButton breathEqApplyButton { "Apply" };
+    juce::TextButton breathEqClearButton { "Clear" };
     QQDeBreathBreathEqComponent breathEqEditor;
     juce::TextButton closeBreathDetailButton { "X" };
     juce::Label breathDetailTitleLabel;
@@ -299,6 +300,7 @@ private:
     DragValueSlider breathDetailGainSlider;
     juce::ToggleButton breathDetailAutoApplyButton { "Auto Apply" };
     juce::TextButton breathDetailApplyButton { "Apply" };
+    juce::TextButton breathDetailClearButton { "Clear" };
     QQDeBreathBreathEqComponent breathDetailEqEditor;
     SourceMode sourceMode = SourceMode::none;
     QQDeBreathARASourceInfo araSourceInfo;
@@ -332,6 +334,10 @@ private:
     juce::String breathEqSpectrumSourceKey;
     double breathEqSpectrumSampleRate = 0.0;
     juce::AudioBuffer<float> breathEqSpectrumSourceBuffer;
+    std::vector<float> globalPreSpectrumPeak;
+    std::vector<float> globalPostSpectrumPeak;
+    std::vector<float> detailPreSpectrumPeak;
+    std::vector<float> detailPostSpectrumPeak;
     std::unique_ptr<AnalysisThread> analysisThread;
     std::unique_ptr<juce::FileChooser> fileChooser;
     std::unique_ptr<ButtonAttachment> monitorVoiceAttachment;

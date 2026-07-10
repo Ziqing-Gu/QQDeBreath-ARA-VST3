@@ -129,6 +129,8 @@ public:
     void clearInternalPreviewPosition();
     double getInternalPreviewPosition(double hostTimeSeconds) const;
     juce::AudioProcessorARAExtension* getARAClientExtensions() override { return this; }
+    bool isBoundToAraHost() const noexcept { return isBoundToARA(); }
+    bool hasAraPlaybackRendererRole() const noexcept { return isPlaybackRenderer(); }
 
     juce::AudioProcessorValueTreeState parameters;
 
@@ -142,6 +144,7 @@ private:
 
     mutable juce::CriticalSection recordedBufferLock;
     juce::AudioBuffer<float> recordedBuffer;
+    juce::int64 recordedLengthSamples = 0;
     double recordedSampleRate = 0.0;
     double recordingStartTimelineSeconds = -1.0;
     std::atomic<bool> recordArmed { false };

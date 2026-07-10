@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 namespace
 {
@@ -11,6 +12,8 @@ constexpr int stateVersion = 6;
 constexpr int exportBitDepth = 32;
 constexpr int maxStateSamplesPerChannel = 48000 * 60 * 20; // Phase 6B guard: 20 minutes at 48 kHz.
 constexpr double maxTimelineGapToFillSeconds = 60.0 * 30.0;
+constexpr double initialRecordCapacitySeconds = 300.0;
+constexpr double recordCapacityGrowSeconds = 300.0;
 
 float getBufferMagnitude(const juce::AudioBuffer<float>& buffer)
 {
@@ -441,6 +444,7 @@ public:
         numChannels = numChannelsIn;
         tempBuffer.setSize(numChannels, maximumSamplesPerBlockIn);
         breathBuffer.setSize(numChannels, maximumSamplesPerBlockIn);
+        sourceReadBuffer.setSize(juce::jmax(8, numChannels), maximumSamplesPerBlockIn * 16 + 32);
         breathEqProcessor.reset();
     }
 
@@ -453,11 +457,14 @@ public:
         if (! positionInfo.getIsPlaying() || sampleRate <= 0.0)
             return true;
 
-        const auto timeInSeconds = positionInfo.getTimeInSeconds();
-        if (! timeInSeconds.hasValue())
+        juce::int64 blockStart = 0;
+        if (const auto timeInSamples = positionInfo.getTimeInSamples(); timeInSamples.hasValue())
+            blockStart = *timeInSamples;
+        else if (const auto timeInSeconds = positionInfo.getTimeInSeconds(); timeInSeconds.hasValue())
+            blockStart = static_cast<juce::int64>(std::llround(*timeInSeconds * sampleRate));
+        else
             return true;
 
-        const auto blockStart = static_cast<juce::int64>(std::llround(*timeInSeconds * sampleRate));
         const auto blockEnd = blockStart + buffer.getNumSamples();
 
         if (tempBuffer.getNumChannels() != buffer.getNumChannels() || tempBuffer.getNumSamples() < buffer.getNumSamples())
@@ -476,34 +483,53 @@ public:
             if (audioSource == nullptr || audioSource->getSampleRate() <= 0.0)
                 continue;
 
-            if (! juce::approximatelyEqual(audioSource->getSampleRate(), sampleRate))
-                continue;
-
+            const auto sourceSampleRate = audioSource->getSampleRate();
             const auto regionStart = playbackRegion->getStartInPlaybackSamples(sampleRate);
             const auto regionEnd = playbackRegion->getEndInPlaybackSamples(sampleRate);
             if (blockEnd <= regionStart || regionEnd <= blockStart)
                 continue;
 
-            auto copyStartInSong = juce::jmax<juce::int64>(blockStart, regionStart);
-            auto copyEndInSong = juce::jmin<juce::int64>(blockEnd, regionEnd);
-
-            const auto offsetToSource = playbackRegion->getStartInAudioModificationSamples() - regionStart;
-            const auto sourceStartLimit = juce::jmax<juce::int64>(0, playbackRegion->getStartInAudioModificationSamples());
-            const auto sourceEndLimit = juce::jmin<juce::int64>(audioSource->getSampleCount(), playbackRegion->getEndInAudioModificationSamples());
-
-            copyStartInSong = juce::jmax<juce::int64>(copyStartInSong, sourceStartLimit - offsetToSource);
-            copyEndInSong = juce::jmin<juce::int64>(copyEndInSong, sourceEndLimit - offsetToSource);
+            const auto copyStartInSong = juce::jmax<juce::int64>(blockStart, regionStart);
+            const auto copyEndInSong = juce::jmin<juce::int64>(blockEnd, regionEnd);
             if (copyEndInSong <= copyStartInSong)
                 continue;
 
             const auto destOffset = static_cast<int>(copyStartInSong - blockStart);
             const auto numSamples = static_cast<int>(copyEndInSong - copyStartInSong);
-            const auto sourceStart = copyStartInSong + offsetToSource;
+            const auto sourceStep = sourceSampleRate / sampleRate;
+            const auto copyStartTime = static_cast<double>(copyStartInSong) / sampleRate;
+            const auto sourceStartPosition = (playbackRegion->getStartInAudioModificationTime()
+                                            + copyStartTime
+                                            - playbackRegion->getStartInPlaybackTime()) * sourceSampleRate;
+            const auto sourceLastPosition = sourceStartPosition + juce::jmax(0, numSamples - 1) * sourceStep;
+            const auto readStart = juce::jmax<juce::int64>(0, static_cast<juce::int64>(std::floor(sourceStartPosition)) - 1);
+            const auto readEnd = juce::jmin<juce::int64>(audioSource->getSampleCount(),
+                                                         static_cast<juce::int64>(std::ceil(sourceLastPosition)) + 2);
+            const auto readCount = static_cast<int>(juce::jmax<juce::int64>(0, readEnd - readStart));
+            if (readCount < 2 || readCount > sourceReadBuffer.getNumSamples())
+                continue;
 
             tempBuffer.clear();
+            sourceReadBuffer.clear();
             juce::ARAAudioSourceReader reader(audioSource);
-            if (! reader.read(&tempBuffer, 0, numSamples, sourceStart, true, true))
+            if (! reader.read(&sourceReadBuffer, 0, readCount, readStart, true, true))
                 continue;
+
+            for (auto channel = 0; channel < tempBuffer.getNumChannels(); ++channel)
+            {
+                const auto sourceChannel = juce::jmin(channel, juce::jmax(1, static_cast<int>(audioSource->getChannelCount())) - 1);
+                const auto* sourceData = sourceReadBuffer.getReadPointer(sourceChannel);
+                auto* destData = tempBuffer.getWritePointer(channel);
+
+                for (auto sampleOffset = 0; sampleOffset < numSamples; ++sampleOffset)
+                {
+                    const auto readPosition = sourceStartPosition + sampleOffset * sourceStep - static_cast<double>(readStart);
+                    const auto index0 = juce::jlimit(0, readCount - 1, static_cast<int>(std::floor(readPosition)));
+                    const auto index1 = juce::jmin(readCount - 1, index0 + 1);
+                    const auto fraction = static_cast<float>(juce::jlimit(0.0, 1.0, readPosition - std::floor(readPosition)));
+                    destData[sampleOffset] = sourceData[index0] + (sourceData[index1] - sourceData[index0]) * fraction;
+                }
+            }
 
             const auto sourceFingerprint = buildAraSourceFingerprint(*audioSource);
             QQDeBreathARAPersistentState state;
@@ -518,8 +544,8 @@ public:
             }
 
             const auto params = owner.getPlaybackParams();
-            const auto fadeInSamples = params.enableFade ? static_cast<int>(std::llround(params.fadeInMs * sampleRate / 1000.0)) : 0;
-            const auto fadeOutSamples = params.enableFade ? static_cast<int>(std::llround(params.fadeOutMs * sampleRate / 1000.0)) : 0;
+            const auto fadeInSamples = params.enableFade ? static_cast<int>(std::llround(params.fadeInMs * sourceSampleRate / 1000.0)) : 0;
+            const auto fadeOutSamples = params.enableFade ? static_cast<int>(std::llround(params.fadeOutMs * sourceSampleRate / 1000.0)) : 0;
             const auto breathTargetGain = dbToGain(params.breathTargetDb);
             const auto breathAdjustGain = dbToGain(juce::jlimit(-60.0, 30.0, params.breathGainDb));
             if (breathBuffer.getNumChannels() != buffer.getNumChannels() || breathBuffer.getNumSamples() < numSamples)
@@ -532,7 +558,7 @@ public:
 
             for (auto sampleOffset = 0; sampleOffset < numSamples; ++sampleOffset)
             {
-                const auto absoluteSourceSample = sourceStart + sampleOffset;
+                const auto absoluteSourceSample = static_cast<juce::int64>(std::llround(sourceStartPosition + sampleOffset * sourceStep));
                 double breathWeight = 0.0;
                 double noizeWeight = 0.0;
                 double breathNormGain = 1.0;
@@ -680,6 +706,7 @@ private:
     double sampleRate = 0.0;
     int numChannels = 0;
     juce::AudioBuffer<float> tempBuffer;
+    juce::AudioBuffer<float> sourceReadBuffer;
     juce::AudioBuffer<float> breathBuffer;
     QQDeBreathEqProcessor breathEqProcessor;
     QQDeBreathEqProcessor regionEqProcessor;
@@ -825,24 +852,29 @@ void QQDeBreathAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     stream.writeInt(stateVersion);
     stream.writeString(xml != nullptr ? xml->toString() : juce::String());
 
-    const juce::ScopedLock lock(recordedBufferLock);
-    const auto channels = recordedBuffer.getNumChannels();
-    const auto samples = recordedBuffer.getNumSamples();
-    const auto canPersist = recordedSampleRate > 0.0
-                         && channels > 0
-                         && samples > 0
-                         && samples <= maxStateSamplesPerChannel;
-
-    stream.writeBool(canPersist);
-    stream.writeDouble(recordedSampleRate);
-    stream.writeInt(channels);
-    stream.writeInt(samples);
-    stream.writeDouble(recordingStartTimelineSeconds);
-
-    if (canPersist)
     {
-        for (auto channel = 0; channel < channels; ++channel)
-            stream.write(recordedBuffer.getReadPointer(channel), static_cast<size_t>(samples) * sizeof(float));
+        const auto captureActive = recordArmed.load(std::memory_order_acquire)
+                                || recording.load(std::memory_order_acquire);
+        const juce::ScopedLock lock(recordedBufferLock);
+        const auto channels = recordedBuffer.getNumChannels();
+        const auto samples = juce::jmin<juce::int64>(recordedLengthSamples, recordedBuffer.getNumSamples());
+        const auto canPersist = ! captureActive
+                             && recordedSampleRate > 0.0
+                             && channels > 0
+                             && samples > 0
+                             && samples <= maxStateSamplesPerChannel;
+
+        stream.writeBool(canPersist);
+        stream.writeDouble(recordedSampleRate);
+        stream.writeInt(channels);
+        stream.writeInt(static_cast<int>(samples));
+        stream.writeDouble(recordingStartTimelineSeconds);
+
+        if (canPersist)
+        {
+            for (auto channel = 0; channel < channels; ++channel)
+                stream.write(recordedBuffer.getReadPointer(channel), static_cast<size_t>(samples) * sizeof(float));
+        }
     }
 
     {
@@ -892,7 +924,8 @@ void QQDeBreathAudioProcessor::setStateInformation(const void* data, int sizeInB
             {
                 recordedSampleRate = sampleRate;
                 recordingStartTimelineSeconds = restoredStartTimelineSeconds;
-                recordedBuffer.setSize(channels, samples, false, false, true);
+                recordedBuffer.setSize(channels, static_cast<int>(samples), false, false, true);
+                recordedLengthSamples = samples;
 
                 for (auto channel = 0; channel < channels; ++channel)
                 {
@@ -902,6 +935,8 @@ void QQDeBreathAudioProcessor::setStateInformation(const void* data, int sizeInB
                     if (stream.read(dest, bytesToRead) != bytesToRead)
                     {
                         recordedBuffer.setSize(0, 0);
+                        recordedLengthSamples = 0;
+                        recordingStartTimelineSeconds = -1.0;
                         break;
                     }
                 }
@@ -909,6 +944,7 @@ void QQDeBreathAudioProcessor::setStateInformation(const void* data, int sizeInB
             else
             {
                 recordedSampleRate = sampleRate > 0.0 ? sampleRate : recordedSampleRate;
+                recordedLengthSamples = 0;
                 recordingStartTimelineSeconds = -1.0;
                 recordedBuffer.setSize(0, 0);
             }
@@ -950,13 +986,61 @@ void QQDeBreathAudioProcessor::setStateInformation(const void* data, int sizeInB
 
 void QQDeBreathAudioProcessor::startRecording()
 {
-    const juce::ScopedLock lock(recordedBufferLock);
-    if (recordedBuffer.getNumChannels() == 0)
-        recordedBuffer.setSize(juce::jmax(1, getTotalNumInputChannels()), 0);
+    auto hostTimeSeconds = -1.0;
+    if (auto* playHead = getPlayHead())
+    {
+        if (const auto position = playHead->getPosition(); position.hasValue())
+        {
+            if (const auto timeInSamples = position->getTimeInSamples(); timeInSamples.hasValue() && getSampleRate() > 0.0)
+                hostTimeSeconds = static_cast<double>(*timeInSamples) / getSampleRate();
+            else if (const auto time = position->getTimeInSeconds())
+                hostTimeSeconds = *time;
+        }
+    }
 
+    const juce::ScopedLock lock(recordedBufferLock);
     recordedSampleRate = getSampleRate() > 0.0 ? getSampleRate() : recordedSampleRate;
-    if (recordedBuffer.getNumSamples() == 0)
-    recordingStartTimelineSeconds = -1.0;
+    const auto inputChannels = juce::jmax(1, getTotalNumInputChannels());
+    const auto sr = recordedSampleRate > 0.0 ? recordedSampleRate : 48000.0;
+    const auto initialCapacity = static_cast<int>(std::ceil(initialRecordCapacitySeconds * sr));
+
+    if (recordedLengthSamples <= 0)
+    {
+        recordedBuffer.setSize(inputChannels, juce::jmax(1, initialCapacity), false, true, true);
+        recordedBuffer.clear();
+        recordedLengthSamples = 0;
+        recordingStartTimelineSeconds = -1.0;
+    }
+    else
+    {
+        const auto requiredCapacity = static_cast<int>(juce::jmin<juce::int64>(maxStateSamplesPerChannel,
+                                                                               recordedLengthSamples + initialCapacity));
+        recordedBuffer.setSize(inputChannels,
+                               juce::jmax(recordedBuffer.getNumSamples(), requiredCapacity),
+                               true,
+                               true,
+                               true);
+
+        if (hostTimeSeconds >= 0.0 && recordingStartTimelineSeconds >= 0.0 && hostTimeSeconds < recordingStartTimelineSeconds)
+        {
+            const auto prependSamples = static_cast<int>(std::llround((recordingStartTimelineSeconds - hostTimeSeconds) * sr));
+            if (prependSamples > 0 && recordedLengthSamples + prependSamples <= recordedBuffer.getNumSamples())
+            {
+                for (auto channel = 0; channel < recordedBuffer.getNumChannels(); ++channel)
+                {
+                    auto* data = recordedBuffer.getWritePointer(channel);
+                    std::memmove(data + prependSamples,
+                                 data,
+                                 static_cast<size_t>(recordedLengthSamples) * sizeof(float));
+                    juce::FloatVectorOperations::clear(data, prependSamples);
+                }
+
+                recordedLengthSamples += prependSamples;
+                recordingStartTimelineSeconds = hostTimeSeconds;
+            }
+        }
+    }
+
     droppedRecordBlocks.store(0, std::memory_order_relaxed);
     recording.store(false, std::memory_order_release);
     recordArmed.store(true, std::memory_order_release);
@@ -976,6 +1060,7 @@ void QQDeBreathAudioProcessor::clearRecording()
     recording.store(false, std::memory_order_release);
     const juce::ScopedLock lock(recordedBufferLock);
     recordedBuffer.setSize(0, 0);
+    recordedLengthSamples = 0;
     recordingStartTimelineSeconds = -1.0;
     droppedRecordBlocks.store(0, std::memory_order_relaxed);
     clearInternalPreviewPosition();
@@ -991,7 +1076,7 @@ QQDeBreathAudioProcessor::RecordedBufferInfo QQDeBreathAudioProcessor::getRecord
     const juce::ScopedLock lock(recordedBufferLock);
     info.sampleRate = recordedSampleRate;
     info.channelCount = recordedBuffer.getNumChannels();
-    info.numSamples = recordedBuffer.getNumSamples();
+    info.numSamples = juce::jmin<juce::int64>(recordedLengthSamples, recordedBuffer.getNumSamples());
     info.durationSeconds = info.sampleRate > 0.0 ? static_cast<double>(info.numSamples) / info.sampleRate : 0.0;
     info.recordingStartTimelineSeconds = recordingStartTimelineSeconds;
     info.hasRecording = info.channelCount > 0 && info.numSamples > 0;
@@ -1014,10 +1099,13 @@ QQDeBreathAudioProcessor::RecordedBufferInfo QQDeBreathAudioProcessor::getRecord
 bool QQDeBreathAudioProcessor::copyRecordedBuffer(juce::AudioBuffer<float>& dest, double& sampleRate) const
 {
     const juce::ScopedLock lock(recordedBufferLock);
-    if (recordedBuffer.getNumChannels() <= 0 || recordedBuffer.getNumSamples() <= 0 || recordedSampleRate <= 0.0)
+    const auto samples = juce::jmin<juce::int64>(recordedLengthSamples, recordedBuffer.getNumSamples());
+    if (recordedBuffer.getNumChannels() <= 0 || samples <= 0 || recordedSampleRate <= 0.0)
         return false;
 
-    dest.makeCopyOf(recordedBuffer);
+    dest.setSize(recordedBuffer.getNumChannels(), static_cast<int>(samples), false, false, true);
+    for (auto channel = 0; channel < recordedBuffer.getNumChannels(); ++channel)
+        dest.copyFrom(channel, 0, recordedBuffer, channel, 0, static_cast<int>(samples));
     sampleRate = recordedSampleRate;
     return true;
 }
@@ -1028,10 +1116,13 @@ bool QQDeBreathAudioProcessor::tryCopyRecordedBuffer(juce::AudioBuffer<float>& d
     if (! lock.isLocked())
         return false;
 
-    if (recordedBuffer.getNumChannels() <= 0 || recordedBuffer.getNumSamples() <= 0 || recordedSampleRate <= 0.0)
+    const auto samples = juce::jmin<juce::int64>(recordedLengthSamples, recordedBuffer.getNumSamples());
+    if (recordedBuffer.getNumChannels() <= 0 || samples <= 0 || recordedSampleRate <= 0.0)
         return false;
 
-    dest.makeCopyOf(recordedBuffer);
+    dest.setSize(recordedBuffer.getNumChannels(), static_cast<int>(samples), false, false, true);
+    for (auto channel = 0; channel < recordedBuffer.getNumChannels(); ++channel)
+        dest.copyFrom(channel, 0, recordedBuffer, channel, 0, static_cast<int>(samples));
     sampleRate = recordedSampleRate;
     return true;
 }
@@ -1069,13 +1160,16 @@ bool QQDeBreathAudioProcessor::exportRecordedBufferToWavUnchecked(const juce::Fi
 
     {
         const juce::ScopedLock lock(recordedBufferLock);
-        if (recordedBuffer.getNumChannels() <= 0 || recordedBuffer.getNumSamples() <= 0 || recordedSampleRate <= 0.0)
+        const auto samples = juce::jmin<juce::int64>(recordedLengthSamples, recordedBuffer.getNumSamples());
+        if (recordedBuffer.getNumChannels() <= 0 || samples <= 0 || recordedSampleRate <= 0.0)
         {
             status = "No recorded buffer to export.";
             return false;
         }
 
-        copy.makeCopyOf(recordedBuffer);
+        copy.setSize(recordedBuffer.getNumChannels(), static_cast<int>(samples), false, false, true);
+        for (auto channel = 0; channel < recordedBuffer.getNumChannels(); ++channel)
+            copy.copyFrom(channel, 0, recordedBuffer, channel, 0, static_cast<int>(samples));
         sampleRate = recordedSampleRate;
     }
 
@@ -1210,7 +1304,7 @@ void QQDeBreathAudioProcessor::setInternalPreviewPosition(double localSeconds, d
 {
     const juce::ScopedLock lock(recordedBufferLock);
     const auto duration = recordedSampleRate > 0.0
-                        ? static_cast<double>(recordedBuffer.getNumSamples()) / recordedSampleRate
+                        ? static_cast<double>(recordedLengthSamples) / recordedSampleRate
                         : 0.0;
     internalPreviewAnchorLocalSeconds.store(juce::jlimit(0.0, juce::jmax(0.0, duration), localSeconds), std::memory_order_release);
     internalPreviewAnchorHostSeconds.store(hostTimeSeconds >= 0.0 ? hostTimeSeconds : recordingStartTimelineSeconds, std::memory_order_release);
@@ -1261,37 +1355,80 @@ void QQDeBreathAudioProcessor::appendToRecordedBuffer(const juce::AudioBuffer<fl
     }
 
     const auto inputChannels = juce::jmax(1, getTotalNumInputChannels());
-    const auto samplesToAppend = buffer.getNumSamples();
-    const auto oldSamples = recordedBuffer.getNumSamples();
-    if (oldSamples == 0 && hostTimeSeconds >= 0.0)
+    const auto samplesToWrite = buffer.getNumSamples();
+    const auto sr = recordedSampleRate > 0.0 ? recordedSampleRate : 48000.0;
+
+    if (recordedLengthSamples == 0 && hostTimeSeconds >= 0.0)
         recordingStartTimelineSeconds = hostTimeSeconds;
 
     if (recordedBuffer.getNumChannels() != inputChannels)
-        recordedBuffer.setSize(inputChannels, oldSamples, true, true, true);
+        recordedBuffer.setSize(inputChannels, recordedBuffer.getNumSamples(), true, true, true);
 
-    auto gapSamples = 0;
-    if (oldSamples > 0 && recordedSampleRate > 0.0 && recordingStartTimelineSeconds >= 0.0 && hostTimeSeconds >= 0.0)
+    juce::int64 writeStart = recordedLengthSamples;
+    if (hostTimeSeconds >= 0.0 && recordingStartTimelineSeconds >= 0.0)
+        writeStart = static_cast<juce::int64>(std::llround((hostTimeSeconds - recordingStartTimelineSeconds) * sr));
+
+    if (writeStart < 0)
     {
-        const auto expectedTimelineSeconds = recordingStartTimelineSeconds + static_cast<double>(oldSamples) / recordedSampleRate;
-        const auto gapSeconds = hostTimeSeconds - expectedTimelineSeconds;
-        const auto blockSeconds = static_cast<double>(samplesToAppend) / recordedSampleRate;
+        const auto prependSamples = static_cast<int>(-writeStart);
+        const auto requiredWithPrepend = recordedLengthSamples + prependSamples + samplesToWrite;
+        if (requiredWithPrepend > recordedBuffer.getNumSamples())
+        {
+            const auto growSamples = juce::jmax<int>(samplesToWrite, static_cast<int>(std::ceil(recordCapacityGrowSeconds * sr)));
+            const auto newCapacity = static_cast<int>(juce::jmin<juce::int64>(maxStateSamplesPerChannel,
+                                                                              requiredWithPrepend + growSamples));
+            recordedBuffer.setSize(inputChannels, newCapacity, true, true, true);
+        }
 
-        if (gapSeconds > blockSeconds * 1.5 && gapSeconds <= maxTimelineGapToFillSeconds)
-            gapSamples = static_cast<int>(std::llround(gapSeconds * recordedSampleRate));
+        if (recordedLengthSamples + prependSamples <= recordedBuffer.getNumSamples())
+        {
+            for (auto channel = 0; channel < inputChannels; ++channel)
+            {
+                auto* data = recordedBuffer.getWritePointer(channel);
+                std::memmove(data + prependSamples,
+                             data,
+                             static_cast<size_t>(recordedLengthSamples) * sizeof(float));
+                juce::FloatVectorOperations::clear(data, prependSamples);
+            }
+
+            recordedLengthSamples += prependSamples;
+            recordingStartTimelineSeconds = hostTimeSeconds;
+            writeStart = 0;
+        }
     }
 
-    recordedBuffer.setSize(inputChannels, oldSamples + gapSamples + samplesToAppend, true, true, true);
+    writeStart = juce::jmax<juce::int64>(0, writeStart);
+    const auto requiredSamples = writeStart + samplesToWrite;
+    if (requiredSamples > maxStateSamplesPerChannel)
+    {
+        droppedRecordBlocks.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    if (requiredSamples > recordedBuffer.getNumSamples())
+    {
+        const auto growSamples = juce::jmax<int>(samplesToWrite, static_cast<int>(std::ceil(recordCapacityGrowSeconds * sr)));
+        const auto newCapacity = static_cast<int>(juce::jmin<juce::int64>(maxStateSamplesPerChannel,
+                                                                          requiredSamples + growSamples));
+        recordedBuffer.setSize(inputChannels, newCapacity, true, true, true);
+    }
+
+    if (writeStart > recordedLengthSamples)
+    {
+        const auto gapSamples = static_cast<int>(writeStart - recordedLengthSamples);
+        for (auto channel = 0; channel < inputChannels; ++channel)
+            recordedBuffer.clear(channel, static_cast<int>(recordedLengthSamples), gapSamples);
+    }
 
     for (auto channel = 0; channel < inputChannels; ++channel)
     {
-        if (gapSamples > 0)
-            recordedBuffer.clear(channel, oldSamples, gapSamples);
-
         if (channel < buffer.getNumChannels())
-            recordedBuffer.copyFrom(channel, oldSamples + gapSamples, buffer, channel, 0, samplesToAppend);
+            recordedBuffer.copyFrom(channel, static_cast<int>(writeStart), buffer, channel, 0, samplesToWrite);
         else
-            recordedBuffer.clear(channel, oldSamples + gapSamples, samplesToAppend);
+            recordedBuffer.clear(channel, static_cast<int>(writeStart), samplesToWrite);
     }
+
+    recordedLengthSamples = juce::jmax(recordedLengthSamples, requiredSamples);
 }
 
 bool QQDeBreathAudioProcessor::renderPreviewBlock(juce::AudioBuffer<float>& buffer, double hostTimeSeconds)
@@ -1303,7 +1440,7 @@ bool QQDeBreathAudioProcessor::renderPreviewBlock(juce::AudioBuffer<float>& buff
     if (! recordingLock.isLocked())
         return false;
 
-    if (recordedBuffer.getNumChannels() <= 0 || recordedBuffer.getNumSamples() <= 0 || recordedSampleRate <= 0.0 || recordingStartTimelineSeconds < 0.0)
+    if (recordedBuffer.getNumChannels() <= 0 || recordedLengthSamples <= 0 || recordedSampleRate <= 0.0 || recordingStartTimelineSeconds < 0.0)
         return false;
 
     const juce::CriticalSection::ScopedTryLockType analysisScope(analysisLock);
@@ -1344,7 +1481,7 @@ bool QQDeBreathAudioProcessor::renderPreviewBlock(juce::AudioBuffer<float>& buff
     for (auto sampleInBlock = 0; sampleInBlock < buffer.getNumSamples(); ++sampleInBlock)
     {
         const auto sourceSample = blockStart + sampleInBlock;
-        if (sourceSample < 0 || sourceSample >= recordedBuffer.getNumSamples())
+        if (sourceSample < 0 || sourceSample >= recordedLengthSamples)
             continue;
 
         double breathWeight = 0.0;
@@ -1359,7 +1496,7 @@ bool QQDeBreathAudioProcessor::renderPreviewBlock(juce::AudioBuffer<float>& buff
                                                      regionIndex,
                                                      sourceSample,
                                                      recordedSampleRate,
-                                                     recordedBuffer.getNumSamples(),
+                                                     static_cast<int>(recordedLengthSamples),
                                                      fadeInSamples,
                                                      fadeOutSamples);
             if (weight <= 0.0)
@@ -1470,7 +1607,7 @@ juce::Array<double> QQDeBreathAudioProcessor::buildRegionPeakCacheForResult(cons
     juce::Array<double> peakCache;
 
     const juce::ScopedLock lock(recordedBufferLock);
-    const auto totalSamples = recordedBuffer.getNumSamples();
+    const auto totalSamples = juce::jmin<juce::int64>(recordedLengthSamples, recordedBuffer.getNumSamples());
 
     for (const auto& region : result.regions)
     {

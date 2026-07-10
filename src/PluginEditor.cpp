@@ -297,6 +297,21 @@ std::vector<float> spectrumFromBuffer(const juce::AudioBuffer<float>& buffer, do
     return displaySpectrumFromDb(dbBins, maxDb);
 }
 
+void holdSpectrumPeak(std::vector<float>& peak, const std::vector<float>& current)
+{
+    if (current.empty())
+    {
+        peak.clear();
+        return;
+    }
+
+    if (peak.size() != current.size())
+        peak.assign(current.size(), 0.0f);
+
+    for (size_t i = 0; i < current.size(); ++i)
+        peak[i] = juce::jmax(peak[i], current[i]);
+}
+
 void spectraFromBuffers(const juce::AudioBuffer<float>& pre,
                         const juce::AudioBuffer<float>& post,
                         double sampleRate,
@@ -378,7 +393,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     addAndMakeVisible(titleLabel);
     titleLabel.setVisible(false);
 
-    phaseLabel.setText("QQDeBreath ARA 1.06 Native + Global/Selected Breath EQ", juce::dontSendNotification);
+    phaseLabel.setText("QQDeBreath ARA 1.09 Native + Global/Selected Breath EQ", juce::dontSendNotification);
     phaseLabel.setJustificationType(juce::Justification::centred);
     phaseLabel.setColour(juce::Label::textColourId, juce::Colour(0xffcbd5e1));
     phaseLabel.setFont(juce::Font(18.0f, juce::Font::plain));
@@ -486,7 +501,23 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     addAndMakeVisible(breathEqPageButton);
 
     setupButton(setDefaultButton, juce::Colour(0xff475569));
-    setDefaultButton.onClick = [this] { saveCurrentGlobalDefaults(); };
+    setDefaultButton.onClick = [this]
+    {
+        juce::Component::SafePointer<QQDeBreathAudioProcessorEditor> safeThis(this);
+        juce::AlertWindow::showAsync(
+            juce::MessageBoxOptions()
+                .withIconType(juce::MessageBoxIconType::QuestionIcon)
+                .withTitle("Set as Default")
+                .withMessage("Save the current global settings as the default for new QQDeBreath instances?\n\nPer-Breath Gain and EQ are not included.")
+                .withButton("Save")
+                .withButton("Cancel")
+                .withAssociatedComponent(this),
+            [safeThis](int result)
+            {
+                if (result == 1 && safeThis != nullptr)
+                    safeThis->saveCurrentGlobalDefaults();
+            });
+    };
     addAndMakeVisible(setDefaultButton);
 
     setupButton(analyzeButton, juce::Colour(0xff7c3aed));
@@ -646,7 +677,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     addChildComponent(breathEqLowPassButton);
     breathEqLoopButton.onClick = [this] { setBreathEqLoopEnabled(breathEqLoopButton.getToggleState()); };
     addChildComponent(breathEqLoopButton);
-    breathEqAutoApplyButton.setToggleState(false, juce::dontSendNotification);
+    breathEqAutoApplyButton.setToggleState(true, juce::dontSendNotification);
     breathEqAutoApplyButton.onClick = [this]
     {
         if (breathEqAutoApplyButton.getToggleState())
@@ -656,6 +687,22 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     setupButton(breathEqApplyButton, juce::Colour(0xff2563eb));
     breathEqApplyButton.onClick = [this] { applyBreathEqPreviewToWaveform(); };
     addChildComponent(breathEqApplyButton);
+    setupButton(breathEqClearButton, juce::Colour(0xff475569));
+    breathEqClearButton.onClick = [this]
+    {
+        const QQDeBreathEqState cleared;
+        audioProcessor.setBreathEqState(cleared);
+        breathEqPageSnapshot = cleared;
+        breathEqPreviewDirty = false;
+        globalPreSpectrumPeak.clear();
+        globalPostSpectrumPeak.clear();
+        refreshBreathEqUi();
+        syncAraPlaybackParams();
+        waveformEditor.refreshProcessedDisplay();
+        refreshBreathEqSpectrum();
+        statusLabel.setText("Status: Global Breath EQ cleared.", juce::dontSendNotification);
+    };
+    addChildComponent(breathEqClearButton);
     breathEqEditor.onStateChanged = [this](const QQDeBreathEqState& state)
     {
         applyBreathEqStateFromUi(state);
@@ -687,7 +734,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     breathDetailGainSlider.onValueChange = [this] { applyBreathDetailFromUi(); };
     addChildComponent(breathDetailGainSlider);
     breathDetailAutoApplyButton.setColour(juce::ToggleButton::textColourId, juce::Colour(0xffcbd5e1));
-    breathDetailAutoApplyButton.setToggleState(false, juce::dontSendNotification);
+    breathDetailAutoApplyButton.setToggleState(true, juce::dontSendNotification);
     breathDetailAutoApplyButton.onClick = [this]
     {
         if (breathDetailAutoApplyButton.getToggleState())
@@ -697,6 +744,32 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     setupButton(breathDetailApplyButton, juce::Colour(0xff2563eb));
     breathDetailApplyButton.onClick = [this] { applyBreathDetailPreviewToWaveform(); };
     addChildComponent(breathDetailApplyButton);
+    setupButton(breathDetailClearButton, juce::Colour(0xff475569));
+    breathDetailClearButton.onClick = [this]
+    {
+        if (! selectedRegionIsBreath())
+            return;
+
+        const QQDeBreathEqState cleared;
+        updatingBreathDetailUi = true;
+        breathDetailEqPowerButton.setToggleState(false, juce::dontSendNotification);
+        breathDetailBypassButton.setToggleState(false, juce::dontSendNotification);
+        breathDetailEqEditor.setState(cleared, false);
+        updatingBreathDetailUi = false;
+        breathDetailSnapshotEq = cleared;
+        breathDetailPreviewDirty = false;
+        detailPreSpectrumPeak.clear();
+        detailPostSpectrumPeak.clear();
+        waveformEditor.setRegionProcessing(selectedRegionIndex,
+                                            breathDetailGainSlider.getValue(),
+                                            cleared,
+                                            true,
+                                            true);
+        refreshBreathDetailUi();
+        refreshBreathEqSpectrum();
+        statusLabel.setText("Status: Selected Breath EQ cleared; Gain preserved.", juce::dontSendNotification);
+    };
+    addChildComponent(breathDetailClearButton);
     breathDetailEqEditor.onStateChanged = [this](const QQDeBreathEqState& state)
     {
         if (updatingBreathDetailUi || ! selectedRegionIsBreath())
@@ -787,6 +860,7 @@ void QQDeBreathAudioProcessorEditor::resized()
         breathGainSlider.setBounds(eqHeader.removeFromLeft(S(112)).reduced(S(3), S(6)));
         breathEqAutoApplyButton.setBounds(eqHeader.removeFromLeft(S(132)).reduced(S(3), S(3)));
         breathEqApplyButton.setBounds(eqHeader.removeFromLeft(S(92)).reduced(S(3), S(3)));
+        breathEqClearButton.setBounds(eqHeader.removeFromLeft(S(82)).reduced(S(3), S(3)));
         breathEqHighPassButton.setBounds({});
         breathEqLowPassButton.setBounds({});
         eqArea.removeFromTop(S(6));
@@ -815,6 +889,7 @@ void QQDeBreathAudioProcessorEditor::resized()
         breathEqLoopButton.setBounds(detailHeader.removeFromLeft(S(82)).reduced(S(3), S(3)));
         breathDetailAutoApplyButton.setBounds(detailHeader.removeFromLeft(S(132)).reduced(S(3), S(3)));
         breathDetailApplyButton.setBounds(detailHeader.removeFromLeft(S(92)).reduced(S(3), S(3)));
+        breathDetailClearButton.setBounds(detailHeader.removeFromLeft(S(82)).reduced(S(3), S(3)));
         breathDetailEqEnableButton.setBounds({});
         breathDetailGainLabel.setBounds(detailHeader.removeFromLeft(S(54)).reduced(S(3), S(3)));
         breathDetailGainSlider.setBounds(detailHeader.removeFromLeft(S(110)).reduced(S(3), S(6)));
@@ -1021,7 +1096,7 @@ void QQDeBreathAudioProcessorEditor::updateRecordingInfo()
 
 bool QQDeBreathAudioProcessorEditor::isAraContext() const
 {
-    return sourceMode == SourceMode::ara || getARAEditorView() != nullptr;
+    return audioProcessor.isBoundToAraHost();
 }
 
 void QQDeBreathAudioProcessorEditor::setMainPageComponentsVisible(bool visible)
@@ -1094,6 +1169,7 @@ void QQDeBreathAudioProcessorEditor::showMainPage()
     breathEqLoopButton.setVisible(false);
     breathEqAutoApplyButton.setVisible(false);
     breathEqApplyButton.setVisible(false);
+    breathEqClearButton.setVisible(false);
     breathEqEditor.setVisible(false);
     closeBreathDetailButton.setVisible(false);
     breathDetailTitleLabel.setVisible(false);
@@ -1103,6 +1179,7 @@ void QQDeBreathAudioProcessorEditor::showMainPage()
     breathDetailGainSlider.setVisible(selectedRegionIsBreath());
     breathDetailAutoApplyButton.setVisible(false);
     breathDetailApplyButton.setVisible(false);
+    breathDetailClearButton.setVisible(false);
     breathDetailEqEditor.setVisible(false);
     setMainPageComponentsVisible(true);
     if (wasEqPage)
@@ -1125,6 +1202,7 @@ void QQDeBreathAudioProcessorEditor::showBreathEqPage()
     breathDetailGainSlider.setVisible(false);
     breathDetailAutoApplyButton.setVisible(false);
     breathDetailApplyButton.setVisible(false);
+    breathDetailClearButton.setVisible(false);
     breathDetailEqEditor.setVisible(false);
     closeBreathEqButton.setVisible(true);
     breathEqEnableButton.setVisible(true);
@@ -1135,6 +1213,7 @@ void QQDeBreathAudioProcessorEditor::showBreathEqPage()
     breathGainSlider.setVisible(true);
     breathEqAutoApplyButton.setVisible(true);
     breathEqApplyButton.setVisible(true);
+    breathEqClearButton.setVisible(true);
     breathEqEditor.setVisible(true);
     waveformEditor.setVisible(true);
     monitorVoiceButton.setVisible(true);
@@ -1172,6 +1251,7 @@ void QQDeBreathAudioProcessorEditor::showBreathDetailPage()
     breathGainSlider.setVisible(false);
     breathEqAutoApplyButton.setVisible(false);
     breathEqApplyButton.setVisible(false);
+    breathEqClearButton.setVisible(false);
     breathEqEditor.setVisible(false);
     closeBreathDetailButton.setVisible(true);
     breathDetailTitleLabel.setVisible(true);
@@ -1181,6 +1261,7 @@ void QQDeBreathAudioProcessorEditor::showBreathDetailPage()
     breathDetailGainSlider.setVisible(true);
     breathDetailAutoApplyButton.setVisible(true);
     breathDetailApplyButton.setVisible(true);
+    breathDetailClearButton.setVisible(true);
     breathDetailEqEditor.setVisible(true);
     waveformEditor.setVisible(true);
     monitorVoiceButton.setVisible(true);
@@ -1324,6 +1405,7 @@ void QQDeBreathAudioProcessorEditor::applyBreathDetailFromUi()
     if (updatingBreathDetailUi || ! selectedRegionIsBreath())
         return;
 
+    detailPostSpectrumPeak.clear();
     auto eq = breathDetailEqEditor.getState();
     const auto eqEnabled = showingBreathDetailPage ? breathDetailEqPowerButton.getToggleState()
                                                    : breathDetailBypassButton.getToggleState();
@@ -1758,6 +1840,7 @@ void QQDeBreathAudioProcessorEditor::refreshRecordedWaveformIfNeeded(const QQDeB
 
 void QQDeBreathAudioProcessorEditor::applyBreathEqStateFromUi(const QQDeBreathEqState& state)
 {
+    globalPostSpectrumPeak.clear();
     auto sanitized = sanitizeBreathEqState(state);
     sanitized.bypassed = false;
     audioProcessor.setBreathEqState(sanitized);
@@ -1805,6 +1888,8 @@ void QQDeBreathAudioProcessorEditor::saveCurrentGlobalDefaults()
     root->setProperty("breath_norm", boolVar(breathNormButton.getToggleState()));
     root->setProperty("breath_target_db", doubleVar(breathTargetSlider.getValue()));
     root->setProperty("global_gain_db", doubleVar(breathGainSlider.getValue()));
+    root->setProperty("global_auto_apply", boolVar(breathEqAutoApplyButton.getToggleState()));
+    root->setProperty("selected_auto_apply", boolVar(breathDetailAutoApplyButton.getToggleState()));
     root->setProperty("global_eq", serializeBreathEqState(audioProcessor.getBreathEqState()));
 
     const auto file = globalDefaultsFile();
@@ -1861,6 +1946,8 @@ void QQDeBreathAudioProcessorEditor::applyGlobalDefaultsFromValue(const juce::va
     breathNormButton.setToggleState(boolProp("breath_norm", false), juce::sendNotificationSync);
     breathTargetSlider.setValue(juce::jlimit(-80.0, 0.0, doubleProp("breath_target_db", -6.0)), juce::sendNotificationSync);
     breathGainSlider.setValue(juce::jlimit(-60.0, 30.0, doubleProp("global_gain_db", 0.0)), juce::sendNotificationSync);
+    breathEqAutoApplyButton.setToggleState(boolProp("global_auto_apply", true), juce::dontSendNotification);
+    breathDetailAutoApplyButton.setToggleState(boolProp("selected_auto_apply", true), juce::dontSendNotification);
 
     QQDeBreathEqState eq;
     if (deserializeBreathEqState(value.getProperty("global_eq", {}).toString(), eq))
@@ -2093,6 +2180,8 @@ void QQDeBreathAudioProcessorEditor::refreshBreathEqSpectrum()
             std::vector<float> preSpectrum;
             std::vector<float> postSpectrum;
             spectraFromBuffers(globalPre, globalPost, sampleRate, preSpectrum, postSpectrum);
+            globalPreSpectrumPeak = preSpectrum;
+            globalPostSpectrumPeak = postSpectrum;
             breathEqEditor.setSpectra(preSpectrum, postSpectrum);
         }
         else
@@ -2132,10 +2221,44 @@ void QQDeBreathAudioProcessorEditor::refreshBreathEqSpectrum()
         return;
     }
 
+    const auto enableFade = audioProcessor.parameters.getRawParameterValue(QQDeBreath::ParamIDs::enableFade)->load() >= 0.5f;
+    const auto normalizeBreath = audioProcessor.parameters.getRawParameterValue(QQDeBreath::ParamIDs::normalizeBreath)->load() >= 0.5f;
+    const auto breathTargetDb = static_cast<double>(audioProcessor.parameters.getRawParameterValue(QQDeBreath::ParamIDs::breathTargetDb)->load());
+    const auto breathTargetGain = dbToGain(breathTargetDb);
+    const auto globalGain = dbToGain(juce::jlimit(-60.0, 30.0, static_cast<double>(audioProcessor.parameters.getRawParameterValue(QQDeBreath::ParamIDs::breathGainDb)->load())));
+    const auto selectedGainDb = showingBreathDetailPage ? breathDetailGainSlider.getValue() : selected.gainDb;
+    const auto selectedGain = dbToGain(juce::jlimit(-30.0, 30.0, selectedGainDb));
+    const auto fadeInSamples = enableFade
+                             ? static_cast<int>(std::llround(audioProcessor.parameters.getRawParameterValue(QQDeBreath::ParamIDs::fadeInMs)->load() * sampleRate / 1000.0))
+                             : 0;
+    const auto fadeOutSamples = enableFade
+                              ? static_cast<int>(std::llround(audioProcessor.parameters.getRawParameterValue(QQDeBreath::ParamIDs::fadeOutMs)->load() * sampleRate / 1000.0))
+                              : 0;
+    auto selectedPeak = 0.0f;
+    for (auto channel = 0; channel < source.getNumChannels(); ++channel)
+        for (auto sample = start; sample < end; ++sample)
+            selectedPeak = juce::jmax(selectedPeak, std::abs(sampleAt(source, channel, sample)));
+    const auto normGain = normalizeBreath && selectedPeak > 1.0e-9f
+                        ? breathTargetGain / static_cast<double>(selectedPeak)
+                        : 1.0;
+
     juce::AudioBuffer<float> detailPre(source.getNumChannels(), detailSamples);
     for (auto channel = 0; channel < source.getNumChannels(); ++channel)
+    {
         for (auto i = 0; i < detailSamples; ++i)
-            detailPre.setSample(channel, i, sampleAt(source, channel, windowStart + i));
+        {
+            const auto sourceSample = windowStart + i;
+            const auto weight = regionWeightForIndex(result.regions,
+                                                     selectedRegionIndex,
+                                                     sourceSample,
+                                                     sampleRate,
+                                                     source.getNumSamples(),
+                                                     fadeInSamples,
+                                                     fadeOutSamples);
+            const auto dry = static_cast<double>(sampleAt(source, channel, sourceSample));
+            detailPre.setSample(channel, i, static_cast<float>(dry * weight * normGain * globalGain));
+        }
+    }
 
     audioProcessor.applyBreathEqToBuffer(detailPre, sampleRate);
 
@@ -2155,9 +2278,13 @@ void QQDeBreathAudioProcessorEditor::refreshBreathEqSpectrum()
         regionProcessor.process(detailPost);
     }
 
+    detailPost.applyGain(static_cast<float>(selectedGain));
+
     std::vector<float> detailPreSpectrum;
     std::vector<float> detailPostSpectrum;
     spectraFromBuffers(detailPre, detailPost, sampleRate, detailPreSpectrum, detailPostSpectrum);
+    detailPreSpectrumPeak = detailPreSpectrum;
+    detailPostSpectrumPeak = detailPostSpectrum;
     breathDetailEqEditor.setSpectra(detailPreSpectrum, detailPostSpectrum);
 }
 
@@ -2278,7 +2405,10 @@ void QQDeBreathAudioProcessorEditor::updateBreathEqDynamicSpectrum()
             if (weight >= breathWeight)
             {
                 breathWeight = weight;
-                regionGain = dbToGain(juce::jlimit(-30.0, 30.0, region.gainDb));
+                const auto previewGainDb = detailPage && regionIndex == selectedRegionIndex
+                                         ? 0.0
+                                         : region.gainDb;
+                regionGain = dbToGain(juce::jlimit(-30.0, 30.0, previewGainDb));
                 if (normalizeBreath)
                 {
                     const auto peak = peakForRegion(regionIndex);
@@ -2307,11 +2437,19 @@ void QQDeBreathAudioProcessorEditor::updateBreathEqDynamicSpectrum()
 
     juce::AudioBuffer<float> post;
     post.makeCopyOf(globalPost, true);
-    if (detailPage && selectedRegion.eqState.hasActiveProcessing())
+    if (detailPage)
     {
-        QQDeBreathEqProcessor regionProcessor;
-        regionProcessor.prepare(breathEqSpectrumSampleRate, post.getNumChannels(), selectedRegion.eqState);
-        regionProcessor.process(post);
+        auto previewEq = breathDetailEqEditor.getState();
+        previewEq.enabled = breathDetailEqPowerButton.getToggleState();
+        previewEq.bypassed = false;
+        if (previewEq.hasActiveProcessing())
+        {
+            QQDeBreathEqProcessor regionProcessor;
+            regionProcessor.prepare(breathEqSpectrumSampleRate, post.getNumChannels(), previewEq);
+            regionProcessor.process(post);
+        }
+
+        post.applyGain(static_cast<float>(dbToGain(juce::jlimit(-30.0, 30.0, breathDetailGainSlider.getValue()))));
     }
 
     std::vector<float> preSpectrum;
@@ -2319,9 +2457,17 @@ void QQDeBreathAudioProcessorEditor::updateBreathEqDynamicSpectrum()
     spectraFromBuffers(detailPage ? globalPost : pre, post, breathEqSpectrumSampleRate, preSpectrum, postSpectrum);
 
     if (detailPage)
-        breathDetailEqEditor.setSpectra(preSpectrum, postSpectrum);
+    {
+        holdSpectrumPeak(detailPreSpectrumPeak, preSpectrum);
+        holdSpectrumPeak(detailPostSpectrumPeak, postSpectrum);
+        breathDetailEqEditor.setSpectra(detailPreSpectrumPeak, detailPostSpectrumPeak);
+    }
     else
-        breathEqEditor.setSpectra(preSpectrum, postSpectrum);
+    {
+        holdSpectrumPeak(globalPreSpectrumPeak, preSpectrum);
+        holdSpectrumPeak(globalPostSpectrumPeak, postSpectrum);
+        breathEqEditor.setSpectra(globalPreSpectrumPeak, globalPostSpectrumPeak);
+    }
 }
 
 bool QQDeBreathAudioProcessorEditor::findNextBreathLoopRange(double& startSeconds, double& endSeconds) const

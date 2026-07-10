@@ -1,0 +1,10 @@
+QQDeBreath ARA/VST3 1.07
+Date: 2026-07-10
+
+- Native C++ Breath analyzer remains aligned with QQDeBreathTool 1.11 model.
+- Timeline punch-in VST3 recording and large-capacity recording buffer.
+- Reaper-oriented ARA time fallback and stricter ARA/VST3 UI context detection.
+- Peak-hold Pre/Post EQ display; Selected Gain affects purple Post spectrum.
+- Auto Apply preferences included in Set as Default.
+- Confirmation dialog and Global/Selected EQ Clear buttons.
+- Analysis algorithm/model unchanged.

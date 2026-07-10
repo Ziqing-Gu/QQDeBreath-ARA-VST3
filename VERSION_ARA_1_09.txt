@@ -1,0 +1,8 @@
+QQDeBreath ARA/VST3 1.09
+Date: 2026-07-11
+
+- Native C++ Breath analyzer remains aligned with QQDeBreathTool 1.11 model.
+- Reaper regular VST3 instances use the Record workflow based on actual ARA binding.
+- ARA playback resamples source audio to the host playback sample rate.
+- All ARA 1.07 recording, EQ, defaults, and project-state behavior retained.
+- Analysis algorithm/model unchanged.
