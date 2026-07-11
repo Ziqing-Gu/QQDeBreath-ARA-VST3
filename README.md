@@ -7,6 +7,8 @@ unified VST3 bundle that can be used as:
 
 - ARA Audio Extension source reader in Cubase/Nuendo.
 - Plain VST3 recorder when ARA is not available.
+  
+感谢网友Jason在测试的过程中给予的帮助！！！非常感谢！！！
 
 ## Analysis Backend
 
