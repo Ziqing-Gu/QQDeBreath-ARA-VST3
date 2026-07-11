@@ -1,0 +1,9 @@
+QQDeBreath ARA/VST3 1.11
+Date: 2026-07-11
+
+- Explicit ARA Load applies Set as Default settings.
+- Missing or invalid saved defaults fall back to built-in defaults.
+- Automatic DAW project restore and editor reopen retain project state.
+- Previous analysis and per-Breath Gain/EQ are cleared on explicit Load.
+- ARA 1.10 Reaper realtime playback optimization retained.
+- Native C++ analyzer and QQDeBreathTool 1.11 model unchanged.

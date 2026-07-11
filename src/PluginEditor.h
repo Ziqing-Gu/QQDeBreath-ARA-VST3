@@ -183,6 +183,7 @@ private:
     juce::Array<juce::ARAPlaybackRegion*> findSelectedAraPlaybackRegions() const;
     bool exportSelectedAraPlaybackRegionsToWav(QQDeBreathARASourceInfo& info);
     bool exportAraSourceToWav(juce::ARAAudioSource& source, QQDeBreathARASourceInfo& info);
+    bool cacheAraSourceForPlayback(juce::ARAAudioSource& source, juce::String& status);
     double getAraLocalPlayheadSeconds(double hostTimeSeconds) const;
     juce::String getActiveSourceKey(const QQDeBreathAudioProcessor::RecordedBufferInfo& info) const;
     bool hasAnalyzableSource(const QQDeBreathAudioProcessor::RecordedBufferInfo& info) const;
@@ -197,6 +198,7 @@ private:
     void rollbackBreathEqPreviewIfNeeded();
     void saveCurrentGlobalDefaults();
     void applySavedGlobalDefaultsIfFreshInstance();
+    void applySavedGlobalDefaults();
     void applyGlobalDefaultsFromValue(const juce::var& value);
     void requestDeferredWaveformRefresh(bool persistAfterRefresh);
     void requestDeferredSpectrumRefresh();
@@ -304,6 +306,7 @@ private:
     QQDeBreathBreathEqComponent breathDetailEqEditor;
     SourceMode sourceMode = SourceMode::none;
     QQDeBreathARASourceInfo araSourceInfo;
+    bool araPlaybackCacheReady = false;
     bool araUiMode = false;
     juce::File lastExportedFile;
     juce::int64 lastDisplayedRecordedSamples = 0;

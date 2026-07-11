@@ -2,6 +2,9 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <cstdint>
+#include <memory>
+
 #include "Parameters.h"
 #include "shared/BridgeAnalysis.h"
 #include "shared/BreathEq.h"
@@ -40,7 +43,10 @@ struct QQDeBreathARAPersistentState
 {
     QQDeBreathARASourceInfo sourceInfo;
     QQDeBreathBridgeAnalysisResult analysisResult;
+    juce::Array<double> regionPeakCache;
 };
+
+using QQDeBreathARASourceAudioBuffer = std::shared_ptr<const juce::AudioBuffer<float>>;
 
 struct QQDeBreathARAPlaybackParams
 {
@@ -179,14 +185,30 @@ public:
     using juce::ARADocumentControllerSpecialisation::ARADocumentControllerSpecialisation;
 
     void upsertPersistentState(const QQDeBreathARASourceInfo& sourceInfo,
-                               const QQDeBreathBridgeAnalysisResult& analysisResult);
+                               const QQDeBreathBridgeAnalysisResult& analysisResult,
+                               const juce::Array<double>& regionPeakCache = {});
     void updateRuntimePersistentState(const QQDeBreathARASourceInfo& sourceInfo,
-                                      const QQDeBreathBridgeAnalysisResult& analysisResult);
+                                      const QQDeBreathBridgeAnalysisResult& analysisResult,
+                                      const juce::Array<double>& regionPeakCache = {});
     bool getPersistentStateForSource(const juce::String& sourceFingerprint,
                                      QQDeBreathARAPersistentState& state) const;
+    bool tryGetPersistentStateForSource(const juce::String& sourceFingerprint,
+                                        QQDeBreathARAPersistentState& state,
+                                        bool& found) const;
     bool getFirstPersistentState(QQDeBreathARAPersistentState& state) const;
+    void setSourceAudioCache(const juce::String& sourceFingerprint,
+                             double sampleRate,
+                             QQDeBreathARASourceAudioBuffer audio);
+    bool tryGetSourceAudioCache(const juce::String& sourceFingerprint,
+                                QQDeBreathARASourceAudioBuffer& audio,
+                                double& sampleRate,
+                                bool& found) const;
     void setPlaybackParams(const QQDeBreathARAPlaybackParams& params);
     QQDeBreathARAPlaybackParams getPlaybackParams() const;
+    bool tryGetPlaybackParams(QQDeBreathARAPlaybackParams& params) const;
+    std::uint64_t getPersistentStateRevision() const noexcept { return persistentStateRevision.load(std::memory_order_acquire); }
+    std::uint64_t getPlaybackParamsRevision() const noexcept { return playbackParamsRevision.load(std::memory_order_acquire); }
+    std::uint64_t getSourceAudioCacheRevision() const noexcept { return sourceAudioCacheRevision.load(std::memory_order_acquire); }
     bool hasRestoredPlaybackParams() const noexcept { return restoredPlaybackParams.load(std::memory_order_acquire); }
 
 protected:
@@ -195,9 +217,21 @@ protected:
     bool doStoreObjectsToStream(juce::ARAOutputStream& output, const juce::ARAStoreObjectsFilter* filter) noexcept override;
 
 private:
+    struct SourceAudioCacheEntry
+    {
+        juce::String sourceFingerprint;
+        double sampleRate = 0.0;
+        QQDeBreathARASourceAudioBuffer audio;
+    };
+
     mutable juce::CriticalSection persistentStateLock;
     juce::Array<QQDeBreathARAPersistentState> persistentStates;
     mutable juce::CriticalSection playbackParamsLock;
     QQDeBreathARAPlaybackParams playbackParams;
+    mutable juce::CriticalSection sourceAudioCacheLock;
+    juce::Array<SourceAudioCacheEntry> sourceAudioCaches;
+    std::atomic<std::uint64_t> persistentStateRevision { 1 };
+    std::atomic<std::uint64_t> playbackParamsRevision { 1 };
+    std::atomic<std::uint64_t> sourceAudioCacheRevision { 1 };
     std::atomic<bool> restoredPlaybackParams { false };
 };

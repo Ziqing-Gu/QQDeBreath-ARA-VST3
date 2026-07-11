@@ -144,6 +144,33 @@ QQDeBreathBridgeRegion QQDeBreathWaveformEditor::getRegion(int index) const
     return {};
 }
 
+juce::Array<double> QQDeBreathWaveformEditor::buildRegionPeakCache(
+    const juce::Array<QQDeBreathBridgeRegion>& regionsToMeasure) const
+{
+    juce::Array<double> peaks;
+    peaks.ensureStorageAllocated(regionsToMeasure.size());
+
+    if (sampleRate <= 0.0 || monoWaveform.getNumSamples() <= 0)
+    {
+        for (auto i = 0; i < regionsToMeasure.size(); ++i)
+            peaks.add(0.0);
+        return peaks;
+    }
+
+    for (const auto& region : regionsToMeasure)
+    {
+        const auto start = regionStartSample(region);
+        const auto end = regionEndSample(region);
+        const auto length = static_cast<int>(juce::jmax<juce::int64>(0, end - start));
+        const auto peak = length > 0
+                        ? monoWaveform.getMagnitude(0, static_cast<int>(start), length)
+                        : 0.0f;
+        peaks.add(static_cast<double>(peak));
+    }
+
+    return peaks;
+}
+
 void QQDeBreathWaveformEditor::setRegionProcessing(int index, double gainDb, const QQDeBreathEqState& eqState, bool notifyChange, bool shouldRebuildDisplay)
 {
     if (index < 0 || index >= regions.size())

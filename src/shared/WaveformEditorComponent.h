@@ -36,6 +36,7 @@ public:
     void setAnalysisResult(const QQDeBreathBridgeAnalysisResult& result);
     void clearRegions();
     const juce::Array<QQDeBreathBridgeRegion>& getRegions() const { return regions; }
+    juce::Array<double> buildRegionPeakCache(const juce::Array<QQDeBreathBridgeRegion>& regionsToMeasure) const;
     int getSelectedRegionIndex() const { return selectedRegion; }
     QQDeBreathBridgeRegion getRegion(int index) const;
     void setRegionProcessing(int index, double gainDb, const QQDeBreathEqState& eqState, bool notifyChange = true, bool rebuildDisplay = true);

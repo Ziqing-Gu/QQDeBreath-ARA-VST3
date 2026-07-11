@@ -12,8 +12,45 @@ on:
       - ".github/workflows/build-vst3.yml"
 
 jobs:
-  macos-universal:
-    name: macOS Universal VST3
+  macos-arm64:
+    name: macOS Apple Silicon arm64 VST3
+    runs-on: macos-15
+    steps:
+      - name: Checkout source and ARA SDK
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Configure arm64 build
+        run: |
+          cmake -S . -B build-macos-arm64 -G Xcode             -DCMAKE_OSX_ARCHITECTURES=arm64             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0             -DQQDEBREATH_COPY_AFTER_BUILD=OFF
+
+      - name: Build VST3
+        run: cmake --build build-macos-arm64 --config Release --target QQDeBreath_VST3 --parallel 3
+
+      - name: Verify, sign, and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          plugin_path="$(find build-macos-arm64 -type d -name QQDeBreath.vst3 -path '*Release*' | head -n 1)"
+          test -n "$plugin_path"
+          binary="$plugin_path/Contents/MacOS/QQDeBreath"
+          lipo -archs "$binary" | tee QQDeBreath-macOS-Apple-Silicon-architectures.txt
+          lipo "$binary" -verify_arch arm64
+          codesign --force --deep --sign - "$plugin_path"
+          ditto -c -k --sequesterRsrc --keepParent "$plugin_path" QQDeBreath-macOS-Apple-Silicon-1.12.zip
+
+      - name: Upload Apple Silicon VST3
+        uses: actions/upload-artifact@v7
+        with:
+          name: QQDeBreath-macOS-Apple-Silicon-1.12
+          path: |
+            QQDeBreath-macOS-Apple-Silicon-1.12.zip
+            QQDeBreath-macOS-Apple-Silicon-architectures.txt
+          if-no-files-found: error
+
+  macos-intel:
+    name: macOS Intel x86_64 VST3
     runs-on: macos-15-intel
     steps:
       - name: Checkout source and ARA SDK
@@ -21,35 +58,32 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Configure Universal build
+      - name: Configure Intel build
         run: |
-          cmake -S . -B build-macos -G Xcode \
-            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-            -DQQDEBREATH_COPY_AFTER_BUILD=OFF
+          cmake -S . -B build-macos-intel -G Xcode             -DCMAKE_OSX_ARCHITECTURES=x86_64             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0             -DQQDEBREATH_COPY_AFTER_BUILD=OFF
 
       - name: Build VST3
-        run: cmake --build build-macos --config Release --target QQDeBreath_VST3 --parallel 3
+        run: cmake --build build-macos-intel --config Release --target QQDeBreath_VST3 --parallel 3
 
       - name: Verify, sign, and package
         shell: bash
         run: |
           set -euo pipefail
-          plugin_path="$(find build-macos -type d -name QQDeBreath.vst3 -path '*Release*' | head -n 1)"
+          plugin_path="$(find build-macos-intel -type d -name QQDeBreath.vst3 -path '*Release*' | head -n 1)"
           test -n "$plugin_path"
           binary="$plugin_path/Contents/MacOS/QQDeBreath"
-          lipo -archs "$binary" | tee QQDeBreath-macOS-architectures.txt
-          lipo "$binary" -verify_arch x86_64 arm64
+          lipo -archs "$binary" | tee QQDeBreath-macOS-Intel-architectures.txt
+          lipo "$binary" -verify_arch x86_64
           codesign --force --deep --sign - "$plugin_path"
-          ditto -c -k --sequesterRsrc --keepParent "$plugin_path" QQDeBreath-macOS-Universal-1.09.zip
+          ditto -c -k --sequesterRsrc --keepParent "$plugin_path" QQDeBreath-macOS-Intel-1.12.zip
 
-      - name: Upload macOS Universal VST3
+      - name: Upload Intel VST3
         uses: actions/upload-artifact@v7
         with:
-          name: QQDeBreath-macOS-Universal-1.09
+          name: QQDeBreath-macOS-Intel-1.12
           path: |
-            QQDeBreath-macOS-Universal-1.09.zip
-            QQDeBreath-macOS-architectures.txt
+            QQDeBreath-macOS-Intel-1.12.zip
+            QQDeBreath-macOS-Intel-architectures.txt
           if-no-files-found: error
 
   windows-x64:
@@ -74,11 +108,11 @@ jobs:
             Where-Object { $_.FullName -match 'Release' } |
             Select-Object -First 1
           if ($null -eq $plugin) { throw 'QQDeBreath.vst3 was not produced.' }
-          Compress-Archive -LiteralPath $plugin.FullName -DestinationPath QQDeBreath-Windows-x64-1.09.zip
+          Compress-Archive -LiteralPath $plugin.FullName -DestinationPath QQDeBreath-Windows-x64-1.12.zip
 
       - name: Upload Windows VST3
         uses: actions/upload-artifact@v7
         with:
-          name: QQDeBreath-Windows-x64-1.09
-          path: QQDeBreath-Windows-x64-1.09.zip
+          name: QQDeBreath-Windows-x64-1.12
+          path: QQDeBreath-Windows-x64-1.12.zip
           if-no-files-found: error

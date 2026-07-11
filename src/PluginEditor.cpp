@@ -393,7 +393,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     addAndMakeVisible(titleLabel);
     titleLabel.setVisible(false);
 
-    phaseLabel.setText("QQDeBreath ARA 1.09 Native + Global/Selected Breath EQ", juce::dontSendNotification);
+    phaseLabel.setText("QQDeBreath ARA 1.12 Native + Global/Selected Breath EQ", juce::dontSendNotification);
     phaseLabel.setJustificationType(juce::Justification::centred);
     phaseLabel.setColour(juce::Label::textColourId, juce::Colour(0xffcbd5e1));
     phaseLabel.setFont(juce::Font(18.0f, juce::Font::plain));
@@ -1512,7 +1512,10 @@ void QQDeBreathAudioProcessorEditor::persistAraState()
 
     const auto result = audioProcessor.getAnalysisResult();
     if (auto* documentController = getAraDocumentController())
-        documentController->upsertPersistentState(araSourceInfo, result);
+    {
+        const auto peaks = waveformEditor.buildRegionPeakCache(result.regions);
+        documentController->upsertPersistentState(araSourceInfo, result, peaks);
+    }
 
     if (araSourceInfo.isComposite)
         persistAraMappedSourceStates(result);
@@ -1533,6 +1536,7 @@ void QQDeBreathAudioProcessorEditor::persistAraMappedSourceStates(const QQDeBrea
             continue;
 
         QQDeBreathBridgeAnalysisResult mappedResult;
+        juce::Array<QQDeBreathBridgeRegion> compositePeakRegions;
         mappedResult.hasResult = result.hasResult;
         mappedResult.succeeded = result.succeeded;
         mappedResult.cancelled = result.cancelled;
@@ -1563,6 +1567,13 @@ void QQDeBreathAudioProcessorEditor::persistAraMappedSourceStates(const QQDeBrea
             mappedRegion.endSample = juce::jlimit<juce::int64>(mappedRegion.startSample, mapping.sourceNumSamples, mappedRegion.endSample);
             mappedResult.regions.add(mappedRegion);
 
+            auto peakRegion = mappedRegion;
+            peakRegion.startTime = overlapStart;
+            peakRegion.endTime = overlapEnd;
+            peakRegion.startSample = static_cast<juce::int64>(std::llround(overlapStart * araSourceInfo.sampleRate));
+            peakRegion.endSample = static_cast<juce::int64>(std::llround(overlapEnd * araSourceInfo.sampleRate));
+            compositePeakRegions.add(peakRegion);
+
             if (mappedRegion.type.equalsIgnoreCase("Breath"))
                 ++mappedResult.breathCount;
             else if (mappedRegion.type.equalsIgnoreCase("Noize"))
@@ -1581,7 +1592,8 @@ void QQDeBreathAudioProcessorEditor::persistAraMappedSourceStates(const QQDeBrea
         sourceInfo.numSamples = mapping.sourceNumSamples;
         sourceInfo.durationSeconds = mappedResult.durationSeconds;
         sourceInfo.exportStatus = "Mapped from selected ARA events.";
-        documentController->upsertPersistentState(sourceInfo, mappedResult);
+        documentController->upsertPersistentState(sourceInfo, mappedResult,
+                                                  waveformEditor.buildRegionPeakCache(compositePeakRegions));
     }
 }
 
@@ -1595,7 +1607,8 @@ void QQDeBreathAudioProcessorEditor::updateAraRuntimeState()
     if (documentController == nullptr)
         return;
 
-    documentController->updateRuntimePersistentState(araSourceInfo, result);
+    const auto peaks = waveformEditor.buildRegionPeakCache(result.regions);
+    documentController->updateRuntimePersistentState(araSourceInfo, result, peaks);
 
     if (araSourceInfo.isComposite)
         updateAraRuntimeMappedSourceStates(result);
@@ -1616,6 +1629,7 @@ void QQDeBreathAudioProcessorEditor::updateAraRuntimeMappedSourceStates(const QQ
             continue;
 
         QQDeBreathBridgeAnalysisResult mappedResult;
+        juce::Array<QQDeBreathBridgeRegion> compositePeakRegions;
         mappedResult.hasResult = result.hasResult;
         mappedResult.succeeded = result.succeeded;
         mappedResult.cancelled = result.cancelled;
@@ -1646,6 +1660,13 @@ void QQDeBreathAudioProcessorEditor::updateAraRuntimeMappedSourceStates(const QQ
             mappedRegion.endSample = juce::jlimit<juce::int64>(mappedRegion.startSample, mapping.sourceNumSamples, mappedRegion.endSample);
             mappedResult.regions.add(mappedRegion);
 
+            auto peakRegion = mappedRegion;
+            peakRegion.startTime = overlapStart;
+            peakRegion.endTime = overlapEnd;
+            peakRegion.startSample = static_cast<juce::int64>(std::llround(overlapStart * araSourceInfo.sampleRate));
+            peakRegion.endSample = static_cast<juce::int64>(std::llround(overlapEnd * araSourceInfo.sampleRate));
+            compositePeakRegions.add(peakRegion);
+
             if (mappedRegion.type.equalsIgnoreCase("Breath"))
                 ++mappedResult.breathCount;
             else if (mappedRegion.type.equalsIgnoreCase("Noize"))
@@ -1661,7 +1682,8 @@ void QQDeBreathAudioProcessorEditor::updateAraRuntimeMappedSourceStates(const QQ
         sourceInfo.numSamples = mapping.sourceNumSamples;
         sourceInfo.durationSeconds = mappedResult.durationSeconds;
         sourceInfo.exportStatus = "Mapped from selected ARA events.";
-        documentController->updateRuntimePersistentState(sourceInfo, mappedResult);
+        documentController->updateRuntimePersistentState(sourceInfo, mappedResult,
+                                                         waveformEditor.buildRegionPeakCache(compositePeakRegions));
     }
 }
 
@@ -1670,7 +1692,8 @@ void QQDeBreathAudioProcessorEditor::restoreAraStateIfNeeded()
     if (! isAraContext())
         return;
 
-    if (sourceMode == SourceMode::ara && araSourceInfo.exportedWav.existsAsFile())
+    if (sourceMode == SourceMode::ara && araSourceInfo.exportedWav.existsAsFile()
+        && araPlaybackCacheReady)
         return;
 
     const auto now = juce::Time::getMillisecondCounter();
@@ -1740,6 +1763,14 @@ void QQDeBreathAudioProcessorEditor::restoreAraStateIfNeeded()
             return;
         }
     }
+
+    juce::String cacheStatus;
+    if (! cacheAraSourceForPlayback(*source, cacheStatus))
+    {
+        statusLabel.setText("Status: " + cacheStatus, juce::dontSendNotification);
+        return;
+    }
+    araPlaybackCacheReady = true;
 
     auto restoredAnalysis = restoredState.analysisResult;
     if (restoredAnalysis.hasResult && restoredAnalysis.sourceKey.isEmpty())
@@ -1914,13 +1945,15 @@ void QQDeBreathAudioProcessorEditor::applySavedGlobalDefaultsIfFreshInstance()
     if (audioProcessor.hasRestoredStateInformation() || araHasProjectState)
         return;
 
-    const auto file = globalDefaultsFile();
-    if (! file.existsAsFile())
-        return;
+    applySavedGlobalDefaults();
+}
 
-    juce::var parsed = juce::JSON::parse(file);
+void QQDeBreathAudioProcessorEditor::applySavedGlobalDefaults()
+{
+    const auto file = globalDefaultsFile();
+    auto parsed = file.existsAsFile() ? juce::JSON::parse(file) : juce::var();
     if (! parsed.isObject())
-        return;
+        parsed = juce::var(new juce::DynamicObject());
 
     applyGlobalDefaultsFromValue(parsed);
 }
@@ -2633,6 +2666,8 @@ void QQDeBreathAudioProcessorEditor::reloadAraSource()
     audioProcessor.clearAnalysisResult();
     waveformEditor.setAnalysisResult({});
     selectedRegionIndex = -1;
+    araPlaybackCacheReady = false;
+    applySavedGlobalDefaults();
 
     const auto selectedPlaybackRegions = findSelectedAraPlaybackRegions();
     if (selectedPlaybackRegions.size() > 1)
@@ -2640,6 +2675,32 @@ void QQDeBreathAudioProcessorEditor::reloadAraSource()
         auto compositeInfo = QQDeBreathARASourceInfo();
         if (exportSelectedAraPlaybackRegionsToWav(compositeInfo))
         {
+            juce::StringArray cachedFingerprints;
+            for (auto* playbackRegion : selectedPlaybackRegions)
+            {
+                auto* modification = playbackRegion != nullptr ? playbackRegion->getAudioModification() : nullptr;
+                auto* selectedSource = modification != nullptr
+                                     ? modification->getAudioSource<juce::ARAAudioSource>()
+                                     : nullptr;
+                if (selectedSource == nullptr)
+                    continue;
+
+                const auto fingerprint = buildAraSourceFingerprint(*selectedSource);
+                if (cachedFingerprints.contains(fingerprint))
+                    continue;
+
+                juce::String cacheStatus;
+                if (! cacheAraSourceForPlayback(*selectedSource, cacheStatus))
+                {
+                    compositeInfo.exportStatus = cacheStatus;
+                    statusLabel.setText("Status: " + cacheStatus, juce::dontSendNotification);
+                    updateAnalysisInfo();
+                    return;
+                }
+                cachedFingerprints.add(fingerprint);
+            }
+            araPlaybackCacheReady = ! cachedFingerprints.isEmpty();
+
             sourceMode = SourceMode::ara;
             araSourceInfo = compositeInfo;
             lastExportedFile = araSourceInfo.exportedWav;
@@ -2680,6 +2741,16 @@ void QQDeBreathAudioProcessorEditor::reloadAraSource()
 
     if (exportAraSourceToWav(*source, araSourceInfo))
     {
+        juce::String cacheStatus;
+        if (! cacheAraSourceForPlayback(*source, cacheStatus))
+        {
+            araSourceInfo.exportStatus = cacheStatus;
+            statusLabel.setText("Status: " + cacheStatus, juce::dontSendNotification);
+            updateAnalysisInfo();
+            return;
+        }
+        araPlaybackCacheReady = true;
+
         sourceMode = SourceMode::ara;
         lastExportedFile = araSourceInfo.exportedWav;
         lastDisplayedRecordedSamples = 0;
@@ -2971,6 +3042,64 @@ bool QQDeBreathAudioProcessorEditor::exportAraSourceToWav(juce::ARAAudioSource& 
     return true;
 }
 
+bool QQDeBreathAudioProcessorEditor::cacheAraSourceForPlayback(juce::ARAAudioSource& source,
+                                                               juce::String& status)
+{
+    auto* documentController = getAraDocumentController();
+    if (documentController == nullptr)
+    {
+        status = "ARA document controller is unavailable for playback cache.";
+        return false;
+    }
+
+    if (! source.isSampleAccessEnabled())
+    {
+        status = "ARA sample access is not enabled for playback cache.";
+        return false;
+    }
+
+    const auto sampleRate = source.getSampleRate();
+    const auto channels = static_cast<int>(source.getChannelCount());
+    const auto samples64 = static_cast<juce::int64>(source.getSampleCount());
+    if (sampleRate <= 0.0 || channels <= 0 || samples64 <= 0
+        || samples64 > std::numeric_limits<int>::max())
+    {
+        status = "ARA source is too large or invalid for realtime playback cache.";
+        return false;
+    }
+
+    auto audio = std::make_shared<juce::AudioBuffer<float>>(channels, static_cast<int>(samples64));
+    audio->clear();
+
+    juce::ARAAudioSourceReader reader(&source);
+    if (! reader.isValid())
+    {
+        status = "Could not create ARA reader for playback cache.";
+        return false;
+    }
+
+    constexpr int blockSize = 65536;
+    for (juce::int64 position = 0; position < samples64;)
+    {
+        const auto samplesThisBlock = static_cast<int>(juce::jmin<juce::int64>(blockSize, samples64 - position));
+        if (! reader.read(audio.get(),
+                          static_cast<int>(position),
+                          samplesThisBlock,
+                          position,
+                          true,
+                          true))
+        {
+            status = "Failed while preloading ARA source for realtime playback.";
+            return false;
+        }
+
+        position += samplesThisBlock;
+    }
+
+    documentController->setSourceAudioCache(buildAraSourceFingerprint(source), sampleRate, audio);
+    status = "ARA source preloaded for realtime playback.";
+    return true;
+}
 double QQDeBreathAudioProcessorEditor::getAraLocalPlayheadSeconds(double hostTimeSeconds) const
 {
     if (araSourceInfo.isComposite)

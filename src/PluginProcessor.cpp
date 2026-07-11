@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <array>
 
 namespace
 {
@@ -228,6 +229,11 @@ juce::String serializeAraPersistentStates(const juce::Array<QQDeBreathARAPersist
         auto* entry = new juce::DynamicObject();
         entry->setProperty("source", araSourceInfoToVar(state.sourceInfo));
         entry->setProperty("analysis", QQDeBreathBridgeAnalysis::serializeResult(state.analysisResult));
+        juce::Array<juce::var> peaks;
+        peaks.ensureStorageAllocated(state.regionPeakCache.size());
+        for (const auto peak : state.regionPeakCache)
+            peaks.add(peak);
+        entry->setProperty("region_peaks", peaks);
         entries.add(juce::var(entry));
     }
 
@@ -265,6 +271,9 @@ bool deserializeAraPersistentStates(const juce::String& text,
             continue;
 
         QQDeBreathBridgeAnalysis::deserializeResult(propString(item, "analysis"), state.analysisResult);
+        if (auto* peaks = item.getProperty("region_peaks", {}).getArray())
+            for (const auto& peak : *peaks)
+                state.regionPeakCache.add(static_cast<double>(peak));
         states.add(state);
     }
 
@@ -444,8 +453,13 @@ public:
         numChannels = numChannelsIn;
         tempBuffer.setSize(numChannels, maximumSamplesPerBlockIn);
         breathBuffer.setSize(numChannels, maximumSamplesPerBlockIn);
-        sourceReadBuffer.setSize(juce::jmax(8, numChannels), maximumSamplesPerBlockIn * 16 + 32);
+        sourceReadBuffer.setSize(juce::jmax(2, numChannels), maximumSamplesPerBlockIn * 16 + 32);
         breathEqProcessor.reset();
+        regionEqProcessor.reset();
+        sourceCaches = {};
+        nextSourceCache = 0;
+        cachedPlaybackParams = owner.getPlaybackParams();
+        cachedPlaybackParamsRevision = owner.getPlaybackParamsRevision();
     }
 
     bool processBlock(juce::AudioBuffer<float>& buffer,
@@ -466,6 +480,7 @@ public:
             return true;
 
         const auto blockEnd = blockStart + buffer.getNumSamples();
+        refreshPlaybackParams();
 
         if (tempBuffer.getNumChannels() != buffer.getNumChannels() || tempBuffer.getNumSamples() < buffer.getNumSamples())
             tempBuffer.setSize(buffer.getNumChannels(), buffer.getNumSamples(), false, false, true);
@@ -501,40 +516,11 @@ public:
             const auto sourceStartPosition = (playbackRegion->getStartInAudioModificationTime()
                                             + copyStartTime
                                             - playbackRegion->getStartInPlaybackTime()) * sourceSampleRate;
-            const auto sourceLastPosition = sourceStartPosition + juce::jmax(0, numSamples - 1) * sourceStep;
-            const auto readStart = juce::jmax<juce::int64>(0, static_cast<juce::int64>(std::floor(sourceStartPosition)) - 1);
-            const auto readEnd = juce::jmin<juce::int64>(audioSource->getSampleCount(),
-                                                         static_cast<juce::int64>(std::ceil(sourceLastPosition)) + 2);
-            const auto readCount = static_cast<int>(juce::jmax<juce::int64>(0, readEnd - readStart));
-            if (readCount < 2 || readCount > sourceReadBuffer.getNumSamples())
+            auto& sourceCache = getSourceCache(*audioSource);
+            if (! renderSourceAudio(*audioSource, sourceCache, sourceStartPosition, sourceStep, numSamples))
                 continue;
-
-            tempBuffer.clear();
-            sourceReadBuffer.clear();
-            juce::ARAAudioSourceReader reader(audioSource);
-            if (! reader.read(&sourceReadBuffer, 0, readCount, readStart, true, true))
-                continue;
-
-            for (auto channel = 0; channel < tempBuffer.getNumChannels(); ++channel)
-            {
-                const auto sourceChannel = juce::jmin(channel, juce::jmax(1, static_cast<int>(audioSource->getChannelCount())) - 1);
-                const auto* sourceData = sourceReadBuffer.getReadPointer(sourceChannel);
-                auto* destData = tempBuffer.getWritePointer(channel);
-
-                for (auto sampleOffset = 0; sampleOffset < numSamples; ++sampleOffset)
-                {
-                    const auto readPosition = sourceStartPosition + sampleOffset * sourceStep - static_cast<double>(readStart);
-                    const auto index0 = juce::jlimit(0, readCount - 1, static_cast<int>(std::floor(readPosition)));
-                    const auto index1 = juce::jmin(readCount - 1, index0 + 1);
-                    const auto fraction = static_cast<float>(juce::jlimit(0.0, 1.0, readPosition - std::floor(readPosition)));
-                    destData[sampleOffset] = sourceData[index0] + (sourceData[index1] - sourceData[index0]) * fraction;
-                }
-            }
-
-            const auto sourceFingerprint = buildAraSourceFingerprint(*audioSource);
-            QQDeBreathARAPersistentState state;
-            const auto hasState = owner.getPersistentStateForSource(sourceFingerprint, state)
-                               && state.analysisResult.succeeded;
+            const auto& state = sourceCache.state;
+            const auto hasState = sourceCache.hasState;
 
             if (! hasState)
             {
@@ -543,14 +529,15 @@ public:
                 continue;
             }
 
-            const auto params = owner.getPlaybackParams();
+            const auto& params = cachedPlaybackParams;
             const auto fadeInSamples = params.enableFade ? static_cast<int>(std::llround(params.fadeInMs * sourceSampleRate / 1000.0)) : 0;
             const auto fadeOutSamples = params.enableFade ? static_cast<int>(std::llround(params.fadeOutMs * sourceSampleRate / 1000.0)) : 0;
             const auto breathTargetGain = dbToGain(params.breathTargetDb);
             const auto breathAdjustGain = dbToGain(juce::jlimit(-60.0, 30.0, params.breathGainDb));
             if (breathBuffer.getNumChannels() != buffer.getNumChannels() || breathBuffer.getNumSamples() < numSamples)
                 breathBuffer.setSize(buffer.getNumChannels(), numSamples, false, false, true);
-            breathBuffer.clear();
+            for (auto channel = 0; channel < breathBuffer.getNumChannels(); ++channel)
+                breathBuffer.clear(channel, 0, numSamples);
             QQDeBreathEqState blockRegionEqState;
             auto blockRegionEqIndex = -1;
             auto hasSingleRegionEqForBlock = false;
@@ -600,7 +587,9 @@ public:
                         }
                         if (params.normalizeBreath)
                         {
-                            const auto peak = getBreathPeak(*audioSource, sourceFingerprint, regionIndex, region);
+                            const auto peak = regionIndex < state.regionPeakCache.size()
+                                                ? state.regionPeakCache.getReference(regionIndex)
+                                                : 0.0;
                             breathNormGain = peak > 1.0e-9 ? breathTargetGain / peak : 1.0;
                         }
                     }
@@ -655,51 +644,174 @@ public:
     }
 
 private:
-    struct PeakCacheEntry
+    struct SourceRuntimeCache
     {
-        juce::String key;
-        double peak = 0.0;
+        juce::ARAAudioSource* source = nullptr;
+        juce::String fingerprint;
+        QQDeBreathARAPersistentState state;
+        std::uint64_t revision = 0;
+        bool hasState = false;
+        QQDeBreathARASourceAudioBuffer audio;
+        double audioSampleRate = 0.0;
+        std::uint64_t audioRevision = 0;
+        bool hasAudio = false;
     };
 
-    double getBreathPeak(juce::ARAAudioSource& source,
-                         const juce::String& sourceFingerprint,
-                         int regionIndex,
-                         const QQDeBreathBridgeRegion& region)
+    void refreshPlaybackParams() noexcept
     {
-        const auto start = regionStartSample(region, source.getSampleRate(), static_cast<int>(source.getSampleCount()));
-        const auto end = regionEndSample(region, source.getSampleRate(), static_cast<int>(source.getSampleCount()));
-        const auto key = sourceFingerprint + "|" + juce::String(regionIndex) + "|" + juce::String(start) + "|" + juce::String(end);
+        const auto revision = owner.getPlaybackParamsRevision();
+        if (revision == cachedPlaybackParamsRevision)
+            return;
 
-        for (const auto& entry : peakCache)
-            if (entry.key == key)
-                return entry.peak;
-
-        auto peak = 0.0f;
-        if (end > start)
+        QQDeBreathARAPlaybackParams updated;
+        if (owner.tryGetPlaybackParams(updated))
         {
-            juce::ARAAudioSourceReader reader(&source);
-            constexpr int blockSize = 8192;
-            juce::AudioBuffer<float> peakBuffer(static_cast<int>(source.getChannelCount()), blockSize);
+            cachedPlaybackParams = updated;
+            cachedPlaybackParamsRevision = revision;
+        }
+    }
 
-            for (auto position = start; position < end;)
+    bool renderSourceAudio(juce::ARAAudioSource& source,
+                           const SourceRuntimeCache& cache,
+                           double sourceStartPosition,
+                           double sourceStep,
+                           int samplesToRender) noexcept
+    {
+        for (auto channel = 0; channel < tempBuffer.getNumChannels(); ++channel)
+            tempBuffer.clear(channel, 0, samplesToRender);
+
+        if (cache.hasAudio && cache.audio != nullptr)
+        {
+            const auto cachedSamples = cache.audio->getNumSamples();
+            const auto cachedChannels = cache.audio->getNumChannels();
+            if (cachedSamples <= 0 || cachedChannels <= 0)
+                return false;
+
+            for (auto channel = 0; channel < tempBuffer.getNumChannels(); ++channel)
             {
-                const auto samplesThisBlock = static_cast<int>(juce::jmin<juce::int64>(blockSize, end - position));
-                peakBuffer.clear();
-                if (! reader.read(&peakBuffer, 0, samplesThisBlock, position, true, true))
-                    break;
+                const auto sourceChannel = juce::jmin(channel, cachedChannels - 1);
+                const auto* sourceData = cache.audio->getReadPointer(sourceChannel);
+                auto* destData = tempBuffer.getWritePointer(channel);
 
-                for (auto channel = 0; channel < peakBuffer.getNumChannels(); ++channel)
-                    peak = juce::jmax(peak, peakBuffer.getMagnitude(channel, 0, samplesThisBlock));
+                for (auto sampleOffset = 0; sampleOffset < samplesToRender; ++sampleOffset)
+                {
+                    const auto position = sourceStartPosition + sampleOffset * sourceStep;
+                    if (position < 0.0 || position >= static_cast<double>(cachedSamples))
+                        continue;
 
-                position += samplesThisBlock;
+                    const auto index0 = juce::jlimit(0, cachedSamples - 1, static_cast<int>(std::floor(position)));
+                    const auto index1 = juce::jmin(cachedSamples - 1, index0 + 1);
+                    const auto fraction = static_cast<float>(position - std::floor(position));
+                    destData[sampleOffset] = sourceData[index0]
+                                           + (sourceData[index1] - sourceData[index0]) * fraction;
+                }
+            }
+
+            return true;
+        }
+
+        const auto sourceLastPosition = sourceStartPosition + juce::jmax(0, samplesToRender - 1) * sourceStep;
+        const auto readStart = juce::jmax<juce::int64>(0, static_cast<juce::int64>(std::floor(sourceStartPosition)) - 1);
+        const auto readEnd = juce::jmin<juce::int64>(source.getSampleCount(),
+                                                     static_cast<juce::int64>(std::ceil(sourceLastPosition)) + 2);
+        const auto readCount = static_cast<int>(juce::jmax<juce::int64>(0, readEnd - readStart));
+        if (readCount < 2 || readCount > sourceReadBuffer.getNumSamples())
+            return false;
+
+        for (auto channel = 0; channel < juce::jmin(sourceReadBuffer.getNumChannels(),
+                                                    juce::jmax(1, static_cast<int>(source.getChannelCount()))); ++channel)
+            sourceReadBuffer.clear(channel, 0, readCount);
+
+        juce::ARAAudioSourceReader reader(&source);
+        if (! reader.read(&sourceReadBuffer, 0, readCount, readStart, true, true))
+            return false;
+
+        for (auto channel = 0; channel < tempBuffer.getNumChannels(); ++channel)
+        {
+            const auto sourceChannel = juce::jmin(channel, juce::jmax(1, static_cast<int>(source.getChannelCount())) - 1);
+            const auto* sourceData = sourceReadBuffer.getReadPointer(sourceChannel);
+            auto* destData = tempBuffer.getWritePointer(channel);
+
+            for (auto sampleOffset = 0; sampleOffset < samplesToRender; ++sampleOffset)
+            {
+                const auto readPosition = sourceStartPosition + sampleOffset * sourceStep - static_cast<double>(readStart);
+                const auto index0 = juce::jlimit(0, readCount - 1, static_cast<int>(std::floor(readPosition)));
+                const auto index1 = juce::jmin(readCount - 1, index0 + 1);
+                const auto fraction = static_cast<float>(juce::jlimit(0.0, 1.0, readPosition - std::floor(readPosition)));
+                destData[sampleOffset] = sourceData[index0]
+                                       + (sourceData[index1] - sourceData[index0]) * fraction;
             }
         }
 
-        if (peakCache.size() > 512)
-            peakCache.remove(0);
+        return true;
+    }
+    SourceRuntimeCache& getSourceCache(juce::ARAAudioSource& source) noexcept
+    {
+        SourceRuntimeCache* cache = nullptr;
 
-        peakCache.add({ key, static_cast<double>(peak) });
-        return peak;
+        for (auto& candidate : sourceCaches)
+        {
+            if (candidate.source == &source)
+            {
+                cache = &candidate;
+                break;
+            }
+        }
+
+        if (cache == nullptr)
+        {
+            for (auto& candidate : sourceCaches)
+            {
+                if (candidate.source == nullptr)
+                {
+                    cache = &candidate;
+                    break;
+                }
+            }
+        }
+
+        if (cache == nullptr)
+        {
+            cache = &sourceCaches[nextSourceCache];
+            nextSourceCache = (nextSourceCache + 1) % sourceCaches.size();
+        }
+
+        if (cache->source != &source)
+        {
+            *cache = {};
+            cache->source = &source;
+            cache->fingerprint = buildAraSourceFingerprint(source);
+        }
+
+        const auto revision = owner.getPersistentStateRevision();
+        if (cache->revision != revision)
+        {
+            QQDeBreathARAPersistentState updated;
+            auto found = false;
+            if (owner.tryGetPersistentStateForSource(cache->fingerprint, updated, found))
+            {
+                cache->state = found ? std::move(updated) : QQDeBreathARAPersistentState {};
+                cache->hasState = found && cache->state.analysisResult.succeeded;
+                cache->revision = revision;
+            }
+        }
+
+        const auto audioRevision = owner.getSourceAudioCacheRevision();
+        if (cache->audioRevision != audioRevision)
+        {
+            QQDeBreathARASourceAudioBuffer updatedAudio;
+            auto updatedSampleRate = 0.0;
+            auto found = false;
+            if (owner.tryGetSourceAudioCache(cache->fingerprint, updatedAudio, updatedSampleRate, found))
+            {
+                cache->audio = found ? std::move(updatedAudio) : QQDeBreathARASourceAudioBuffer {};
+                cache->audioSampleRate = found ? updatedSampleRate : 0.0;
+                cache->hasAudio = found && cache->audio != nullptr;
+                cache->audioRevision = audioRevision;
+            }
+        }
+
+        return *cache;
     }
 
     QQDeBreathARADocumentController& owner;
@@ -710,7 +822,10 @@ private:
     juce::AudioBuffer<float> breathBuffer;
     QQDeBreathEqProcessor breathEqProcessor;
     QQDeBreathEqProcessor regionEqProcessor;
-    juce::Array<PeakCacheEntry> peakCache;
+    std::array<SourceRuntimeCache, 32> sourceCaches {};
+    size_t nextSourceCache = 0;
+    QQDeBreathARAPlaybackParams cachedPlaybackParams;
+    std::uint64_t cachedPlaybackParamsRevision = 0;
 };
 
 } // namespace
@@ -1651,7 +1766,8 @@ const ARA::ARAFactory* JUCE_CALLTYPE createARAFactory()
 }
 
 void QQDeBreathARADocumentController::upsertPersistentState(const QQDeBreathARASourceInfo& sourceInfo,
-                                                            const QQDeBreathBridgeAnalysisResult& analysisResult)
+                                                            const QQDeBreathBridgeAnalysisResult& analysisResult,
+                                                            const juce::Array<double>& regionPeakCache)
 {
     if (sourceInfo.sourceFingerprint.isEmpty())
         return;
@@ -1661,46 +1777,65 @@ void QQDeBreathARADocumentController::upsertPersistentState(const QQDeBreathARAS
         QQDeBreathARAPersistentState state;
         state.sourceInfo = sourceInfo;
         state.analysisResult = analysisResult;
+        state.regionPeakCache = regionPeakCache;
 
+        auto replaced = false;
         for (auto i = 0; i < persistentStates.size(); ++i)
         {
             if (persistentStates.getReference(i).sourceInfo.sourceFingerprint == sourceInfo.sourceFingerprint)
             {
+                if (state.regionPeakCache.isEmpty()
+                    && persistentStates.getReference(i).regionPeakCache.size() == analysisResult.regions.size())
+                    state.regionPeakCache = persistentStates.getReference(i).regionPeakCache;
                 persistentStates.set(i, state);
-                getDocumentController()->getHostModelUpdateController()->notifyDocumentDataChanged();
-                return;
+                replaced = true;
+                break;
             }
         }
 
-        persistentStates.add(state);
+        if (! replaced)
+            persistentStates.add(state);
     }
 
-    getDocumentController()->getHostModelUpdateController()->notifyDocumentDataChanged();
+    persistentStateRevision.fetch_add(1, std::memory_order_release);
+    if (auto* updateController = getDocumentController()->getHostModelUpdateController())
+        updateController->notifyDocumentDataChanged();
 }
 
 void QQDeBreathARADocumentController::updateRuntimePersistentState(const QQDeBreathARASourceInfo& sourceInfo,
-                                                                   const QQDeBreathBridgeAnalysisResult& analysisResult)
+                                                                   const QQDeBreathBridgeAnalysisResult& analysisResult,
+                                                                   const juce::Array<double>& regionPeakCache)
 {
     if (sourceInfo.sourceFingerprint.isEmpty())
         return;
 
-    const juce::ScopedLock lock(persistentStateLock);
-    QQDeBreathARAPersistentState state;
-    state.sourceInfo = sourceInfo;
-    state.analysisResult = analysisResult;
-
-    for (auto i = 0; i < persistentStates.size(); ++i)
     {
-        if (persistentStates.getReference(i).sourceInfo.sourceFingerprint == sourceInfo.sourceFingerprint)
+        const juce::ScopedLock lock(persistentStateLock);
+        QQDeBreathARAPersistentState state;
+        state.sourceInfo = sourceInfo;
+        state.analysisResult = analysisResult;
+        state.regionPeakCache = regionPeakCache;
+
+        auto replaced = false;
+        for (auto i = 0; i < persistentStates.size(); ++i)
         {
-            persistentStates.set(i, state);
-            return;
+            if (persistentStates.getReference(i).sourceInfo.sourceFingerprint == sourceInfo.sourceFingerprint)
+            {
+                if (state.regionPeakCache.isEmpty()
+                    && persistentStates.getReference(i).regionPeakCache.size() == analysisResult.regions.size())
+                    state.regionPeakCache = persistentStates.getReference(i).regionPeakCache;
+                persistentStates.set(i, state);
+                replaced = true;
+                break;
+            }
         }
+
+        if (! replaced)
+            persistentStates.add(state);
     }
 
-    persistentStates.add(state);
+    persistentStateRevision.fetch_add(1, std::memory_order_release);
 }
-
 bool QQDeBreathARADocumentController::getPersistentStateForSource(const juce::String& sourceFingerprint,
                                                                   QQDeBreathARAPersistentState& state) const
 {
@@ -1718,6 +1853,29 @@ bool QQDeBreathARADocumentController::getPersistentStateForSource(const juce::St
     return false;
 }
 
+bool QQDeBreathARADocumentController::tryGetPersistentStateForSource(
+    const juce::String& sourceFingerprint,
+    QQDeBreathARAPersistentState& state,
+    bool& found) const
+{
+    const juce::CriticalSection::ScopedTryLockType lock(persistentStateLock);
+    if (! lock.isLocked())
+        return false;
+
+    found = false;
+    for (const auto& item : persistentStates)
+    {
+        if (item.sourceInfo.sourceFingerprint == sourceFingerprint)
+        {
+            state = item;
+            found = true;
+            break;
+        }
+    }
+
+    return true;
+}
+
 bool QQDeBreathARADocumentController::getFirstPersistentState(QQDeBreathARAPersistentState& state) const
 {
     const juce::ScopedLock lock(persistentStateLock);
@@ -1728,6 +1886,63 @@ bool QQDeBreathARADocumentController::getFirstPersistentState(QQDeBreathARAPersi
     return true;
 }
 
+void QQDeBreathARADocumentController::setSourceAudioCache(
+    const juce::String& sourceFingerprint,
+    double sampleRate,
+    QQDeBreathARASourceAudioBuffer audio)
+{
+    if (sourceFingerprint.isEmpty() || sampleRate <= 0.0 || audio == nullptr
+        || audio->getNumChannels() <= 0 || audio->getNumSamples() <= 0)
+        return;
+
+    {
+        const juce::ScopedLock lock(sourceAudioCacheLock);
+        auto replaced = false;
+        for (auto i = 0; i < sourceAudioCaches.size(); ++i)
+        {
+            if (sourceAudioCaches.getReference(i).sourceFingerprint == sourceFingerprint)
+            {
+                sourceAudioCaches.set(i, { sourceFingerprint, sampleRate, std::move(audio) });
+                replaced = true;
+                break;
+            }
+        }
+
+        if (! replaced)
+        {
+            if (sourceAudioCaches.size() >= 32)
+                sourceAudioCaches.remove(0);
+            sourceAudioCaches.add({ sourceFingerprint, sampleRate, std::move(audio) });
+        }
+    }
+
+    sourceAudioCacheRevision.fetch_add(1, std::memory_order_release);
+}
+
+bool QQDeBreathARADocumentController::tryGetSourceAudioCache(
+    const juce::String& sourceFingerprint,
+    QQDeBreathARASourceAudioBuffer& audio,
+    double& sampleRate,
+    bool& found) const
+{
+    const juce::CriticalSection::ScopedTryLockType lock(sourceAudioCacheLock);
+    if (! lock.isLocked())
+        return false;
+
+    found = false;
+    for (const auto& entry : sourceAudioCaches)
+    {
+        if (entry.sourceFingerprint == sourceFingerprint)
+        {
+            audio = entry.audio;
+            sampleRate = entry.sampleRate;
+            found = audio != nullptr;
+            break;
+        }
+    }
+
+    return true;
+}
 void QQDeBreathARADocumentController::setPlaybackParams(const QQDeBreathARAPlaybackParams& params)
 {
     auto changed = false;
@@ -1739,14 +1954,27 @@ void QQDeBreathARADocumentController::setPlaybackParams(const QQDeBreathARAPlayb
     }
 
     if (changed)
+    {
+        playbackParamsRevision.fetch_add(1, std::memory_order_release);
         if (auto* updateController = getDocumentController()->getHostModelUpdateController())
             updateController->notifyDocumentDataChanged();
+    }
 }
 
 QQDeBreathARAPlaybackParams QQDeBreathARADocumentController::getPlaybackParams() const
 {
     const juce::ScopedLock lock(playbackParamsLock);
     return playbackParams;
+}
+
+bool QQDeBreathARADocumentController::tryGetPlaybackParams(QQDeBreathARAPlaybackParams& params) const
+{
+    const juce::CriticalSection::ScopedTryLockType lock(playbackParamsLock);
+    if (! lock.isLocked())
+        return false;
+
+    params = playbackParams;
+    return true;
 }
 
 bool QQDeBreathARADocumentController::doRestoreObjectsFromStream(juce::ARAInputStream& input,
@@ -1768,6 +1996,8 @@ bool QQDeBreathARADocumentController::doRestoreObjectsFromStream(juce::ARAInputS
         const juce::ScopedLock lock(playbackParamsLock);
         playbackParams = restoredParams;
     }
+    persistentStateRevision.fetch_add(1, std::memory_order_release);
+    playbackParamsRevision.fetch_add(1, std::memory_order_release);
     restoredPlaybackParams.store(true, std::memory_order_release);
 
     if (auto* archivingController = getDocumentController()->getHostArchivingController())

@@ -1,0 +1,9 @@
+QQDeBreath ARA/VST3 1.10
+Date: 2026-07-11
+
+- Reaper ARA playback realtime path revised to avoid blocking state reads.
+- ARA source state and playback parameters are revision cached.
+- Breath Norm peaks are prepared outside playback and stored in project state.
+- Unchanged EQ state no longer performs per-block JSON serialization.
+- ARA 1.09 source-rate conversion and actual host-binding behavior retained.
+- Native C++ analyzer and QQDeBreathTool 1.11 model unchanged.

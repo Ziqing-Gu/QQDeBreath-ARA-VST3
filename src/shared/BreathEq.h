@@ -66,11 +66,12 @@ private:
         double z2 = 0.0;
     };
 
-    static juce::String stateKey(const QQDeBreathEqState& state, double sampleRate, int channels);
+    static bool statesEqual(const QQDeBreathEqState& a, const QQDeBreathEqState& b);
 
     double currentSampleRate = 0.0;
     int currentChannels = 0;
-    juce::String currentKey;
+    QQDeBreathEqState currentState;
+    bool hasCurrentState = false;
     std::vector<Coefficients> filters;
     std::vector<std::vector<BiquadState>> channelStates;
 };

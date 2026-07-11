@@ -216,11 +216,14 @@ double breathEqMagnitudeDbAt(const QQDeBreathEqState& stateIn, double frequencyH
 void QQDeBreathEqProcessor::prepare(double sampleRate, int channels, const QQDeBreathEqState& stateIn)
 {
     const auto state = sanitizeBreathEqState(stateIn);
-    const auto key = stateKey(state, sampleRate, channels);
-    if (key == currentKey && juce::approximatelyEqual(sampleRate, currentSampleRate) && channels == currentChannels)
+    if (hasCurrentState
+        && statesEqual(state, currentState)
+        && juce::approximatelyEqual(sampleRate, currentSampleRate)
+        && channels == currentChannels)
         return;
 
-    currentKey = key;
+    currentState = state;
+    hasCurrentState = true;
     currentSampleRate = sampleRate;
     currentChannels = channels;
     filters.clear();
@@ -346,7 +349,30 @@ double QQDeBreathEqProcessor::magnitudeDbAt(const Coefficients& coefficients, do
     return 20.0 * std::log10(std::max(1.0e-12, std::abs(responseAt(coefficients, frequencyHz, sampleRate))));
 }
 
-juce::String QQDeBreathEqProcessor::stateKey(const QQDeBreathEqState& state, double sampleRate, int channels)
+bool QQDeBreathEqProcessor::statesEqual(const QQDeBreathEqState& a, const QQDeBreathEqState& b)
 {
-    return serializeBreathEqState(state) + "|sr=" + juce::String(sampleRate, 6) + "|ch=" + juce::String(channels);
+    constexpr auto epsilon = 1.0e-9;
+    if (a.enabled != b.enabled
+        || a.highPassEnabled != b.highPassEnabled
+        || a.lowPassEnabled != b.lowPassEnabled
+        || a.highPassSlopeDbPerOct != b.highPassSlopeDbPerOct
+        || a.lowPassSlopeDbPerOct != b.lowPassSlopeDbPerOct
+        || std::abs(a.highPassHz - b.highPassHz) > epsilon
+        || std::abs(a.lowPassHz - b.lowPassHz) > epsilon
+        || std::abs(a.highPassQ - b.highPassQ) > epsilon
+        || std::abs(a.lowPassQ - b.lowPassQ) > epsilon)
+        return false;
+
+    for (size_t i = 0; i < a.bands.size(); ++i)
+    {
+        const auto& left = a.bands[i];
+        const auto& right = b.bands[i];
+        if (left.enabled != right.enabled
+            || std::abs(left.frequencyHz - right.frequencyHz) > epsilon
+            || std::abs(left.gainDb - right.gainDb) > epsilon
+            || std::abs(left.q - right.q) > epsilon)
+            return false;
+    }
+
+    return true;
 }
