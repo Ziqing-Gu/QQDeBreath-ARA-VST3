@@ -37,13 +37,18 @@ else()
     message(WARNING "ARA SDK not found at QQDEBREATH_ARA_SDK_PATH='${QQDEBREATH_ARA_SDK_PATH}'. Unified QQDeBreath ARA support requires the ARA SDK.")
 endif()
 
+set(QQDEBREATH_PLUGIN_FORMATS VST3)
+if(APPLE)
+    list(APPEND QQDEBREATH_PLUGIN_FORMATS AU)
+endif()
+
 juce_add_plugin(QQDeBreath
     COMPANY_NAME "QQDeBreath"
     PRODUCT_NAME "QQDeBreath"
     BUNDLE_ID "com.qqdebreath.QQDeBreath"
     PLUGIN_MANUFACTURER_CODE Qqdb
     PLUGIN_CODE Qdb1
-    FORMATS VST3
+    FORMATS ${QQDEBREATH_PLUGIN_FORMATS}
     IS_ARA_EFFECT TRUE
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT FALSE

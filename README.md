@@ -1,14 +1,24 @@
-# QQDeBreath ARA/VST3 Plugin
+# QQDeBreath ARA/VST3/AU Plugin
 
 Current plugin version: `ARA 1.12`
 
-This plugin is the current QQDeBreath ARA/VST3 interactive prototype. It is a
-unified VST3 bundle that can be used as:
+This plugin is the current QQDeBreath ARA/VST3/AU interactive prototype. It
+uses one shared processor and editor implementation to produce:
 
 - ARA Audio Extension source reader in Cubase/Nuendo.
 - Plain VST3 recorder when ARA is not available.
-  
+- ARA 2 Audio Unit for Logic Pro on macOS.
+
 感谢网友Jason在测试的过程中给予的帮助！！！非常感谢！！！
+
+## Host Formats
+
+- Cubase, Nuendo, REAPER, and Studio One: use QQDeBreath.vst3.
+- Logic Pro: use QQDeBreath.component (Audio Unit v2).
+- The macOS AU artifact is Universal 2 and contains both arm64 and x86_64.
+- On Apple Silicon, Logic Pro currently requires Rosetta when a third-party
+  Audio Unit is used in ARA mode. Insert QQDeBreath in the first Audio Effect
+  slot to use the Logic ARA workflow.
 
 ## Analysis Backend
 
@@ -162,3 +172,17 @@ The installed VST3 path is usually:
 ```text
 C:\Program Files\Common Files\VST3\QQDeBreath.vst3
 ```
+On macOS, the generated targets are:
+
+    QQDeBreath_VST3 -> QQDeBreath.vst3
+    QQDeBreath_AU   -> QQDeBreath.component
+
+The standard system install locations are:
+
+    /Library/Audio/Plug-Ins/VST3/QQDeBreath.vst3
+    /Library/Audio/Plug-Ins/Components/QQDeBreath.component
+
+GitHub Actions publishes separate Apple Silicon and Intel VST3 archives plus
+one Universal 2 AU archive. These test builds are ad-hoc signed, not Apple
+Developer ID signed or notarized, so macOS may require manual approval under
+Privacy & Security before the first host scan.
