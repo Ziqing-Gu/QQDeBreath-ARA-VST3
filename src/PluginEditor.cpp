@@ -386,6 +386,8 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
       AudioProcessorEditorARAExtension(&processor),
       audioProcessor(processor)
 {
+    setWantsKeyboardFocus(true);
+
     titleLabel.setText("QQDeBreath", juce::dontSendNotification);
     titleLabel.setJustificationType(juce::Justification::centred);
     titleLabel.setColour(juce::Label::textColourId, juce::Colours::white);
@@ -393,7 +395,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     addAndMakeVisible(titleLabel);
     titleLabel.setVisible(false);
 
-    phaseLabel.setText("QQDeBreath ARA 1.12 Native + Global/Selected Breath EQ", juce::dontSendNotification);
+    phaseLabel.setText("QQDeBreath ARA 1.13 Native + Global/Selected Breath EQ", juce::dontSendNotification);
     phaseLabel.setJustificationType(juce::Justification::centred);
     phaseLabel.setColour(juce::Label::textColourId, juce::Colour(0xffcbd5e1));
     phaseLabel.setFont(juce::Font(18.0f, juce::Font::plain));
@@ -455,19 +457,11 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     addAndMakeVisible(clearButton);
 
     setupButton(undoButton, juce::Colour(0xff334155));
-    undoButton.onClick = [this]
-    {
-        waveformEditor.undo();
-        updateAnalysisInfo();
-    };
+    undoButton.onClick = [this] { performUndo(); };
     addAndMakeVisible(undoButton);
 
     setupButton(redoButton, juce::Colour(0xff334155));
-    redoButton.onClick = [this]
-    {
-        waveformEditor.redo();
-        updateAnalysisInfo();
-    };
+    redoButton.onClick = [this] { performRedo(); };
     addAndMakeVisible(redoButton);
 
     setupButton(exportButton, juce::Colour(0xff2563eb));
@@ -680,8 +674,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     breathEqAutoApplyButton.setToggleState(true, juce::dontSendNotification);
     breathEqAutoApplyButton.onClick = [this]
     {
-        if (breathEqAutoApplyButton.getToggleState())
-            applyBreathEqPreviewToWaveform();
+        setAutoApplyEnabled(breathEqAutoApplyButton.getToggleState(), true);
     };
     addChildComponent(breathEqAutoApplyButton);
     setupButton(breathEqApplyButton, juce::Colour(0xff2563eb));
@@ -737,8 +730,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     breathDetailAutoApplyButton.setToggleState(true, juce::dontSendNotification);
     breathDetailAutoApplyButton.onClick = [this]
     {
-        if (breathDetailAutoApplyButton.getToggleState())
-            applyBreathDetailPreviewToWaveform();
+        setAutoApplyEnabled(breathDetailAutoApplyButton.getToggleState(), true);
     };
     addChildComponent(breathDetailAutoApplyButton);
     setupButton(breathDetailApplyButton, juce::Colour(0xff2563eb));
@@ -816,9 +808,8 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     updateRecordingInfo();
     startTimerHz(30);
 
-    const auto initialAraContext = isAraContext();
-    setResizable(! initialAraContext, ! initialAraContext);
-    setResizeLimits(960, 560, 1800, 1200);
+    setResizable(true, true);
+    setResizeLimits(960, 560, 8192, 8192);
     setSize(1180, 720);
 }
 
@@ -909,14 +900,28 @@ void QQDeBreathAudioProcessorEditor::resized()
         return;
     }
 
+    const auto compactToolbar = area.getWidth() < S(1440);
     auto top = area.removeFromTop(rowHeight);
-    auto topRight = top.removeFromRight(S(560));
-    auto selectedTools = topRight.removeFromLeft(S(370));
+    juce::Rectangle<int> selectedTools;
+
+    if (compactToolbar)
+    {
+        area.removeFromTop(gap);
+        auto secondary = area.removeFromTop(rowHeight);
+        selectedTools = secondary.removeFromLeft(S(370));
+        exportButton.setBounds(secondary.removeFromRight(S(168)).reduced(S(3), S(3)));
+    }
+    else
+    {
+        auto topRight = top.removeFromRight(S(560));
+        selectedTools = topRight.removeFromLeft(S(370));
+        exportButton.setBounds(topRight.removeFromRight(S(168)).reduced(S(3), S(3)));
+    }
+
     breathDetailBypassButton.setBounds(selectedTools.removeFromLeft(S(52)).reduced(S(3), S(3)));
     breathDetailButton.setBounds(selectedTools.removeFromLeft(S(128)).reduced(S(3), S(3)));
     breathDetailTopGainLabel.setBounds(selectedTools.removeFromLeft(S(44)).reduced(S(3), S(3)));
     breathDetailGainSlider.setBounds(selectedTools.removeFromLeft(S(102)).reduced(S(3), S(6)));
-    exportButton.setBounds(topRight.removeFromRight(S(168)).reduced(S(3), S(3)));
 
     if (araContext)
     {
@@ -993,6 +998,57 @@ void QQDeBreathAudioProcessorEditor::resized()
     sourceMismatchLabel.setBounds(area.removeFromTop(S(24)));
     analysisErrorLabel.setBounds(area.removeFromTop(S(24)));
     exportPathLabel.setBounds(0, 0, 0, 0);
+}
+
+bool QQDeBreathAudioProcessorEditor::keyPressed(const juce::KeyPress& key)
+{
+    const auto modifiers = key.getModifiers();
+    const auto keyCode = key.getKeyCode();
+    const auto isZ = keyCode == 'z' || keyCode == 'Z';
+
+    if (isZ && (modifiers.isCommandDown() || modifiers.isCtrlDown()))
+    {
+        if (modifiers.isShiftDown())
+            performRedo();
+        else
+            performUndo();
+
+        return true;
+    }
+
+    return juce::AudioProcessorEditor::keyPressed(key);
+}
+
+void QQDeBreathAudioProcessorEditor::performUndo()
+{
+    if (! waveformEditor.canUndo())
+        return;
+
+    waveformEditor.undo();
+    updateAnalysisInfo();
+}
+
+void QQDeBreathAudioProcessorEditor::performRedo()
+{
+    if (! waveformEditor.canRedo())
+        return;
+
+    waveformEditor.redo();
+    updateAnalysisInfo();
+}
+
+void QQDeBreathAudioProcessorEditor::setAutoApplyEnabled(bool enabled, bool applyPendingPreview)
+{
+    breathEqAutoApplyButton.setToggleState(enabled, juce::dontSendNotification);
+    breathDetailAutoApplyButton.setToggleState(enabled, juce::dontSendNotification);
+
+    if (! enabled || ! applyPendingPreview)
+        return;
+
+    if (showingBreathEqPage && breathEqPreviewDirty)
+        applyBreathEqPreviewToWaveform();
+    else if (showingBreathDetailPage && breathDetailPreviewDirty)
+        applyBreathDetailPreviewToWaveform();
 }
 
 void QQDeBreathAudioProcessorEditor::timerCallback()
@@ -1291,7 +1347,7 @@ void QQDeBreathAudioProcessorEditor::updateContextUi()
     if (araUiMode != araContext)
     {
         araUiMode = araContext;
-        setResizable(! araContext, ! araContext);
+        setResizable(true, true);
         resized();
     }
 
@@ -1306,8 +1362,8 @@ void QQDeBreathAudioProcessorEditor::updateContextUi()
         waveformSizeSlider.setValue(1.0, juce::sendNotificationSync);
 
     workflowLabel.setText(araContext
-        ? juce::String(QQDEBREATH_PLUGIN_VERSION) + " | " + QQDEBREATH_APP_BRIDGE_VERSION + " | Click waveform: move Cubase playhead; Drag value boxes up/down, Shift=fine, Alt-click=default; Shift+drag: create/replace; Right-click: Breath/Noize; Delete: remove."
-        : juce::String(QQDEBREATH_PLUGIN_VERSION) + " | " + QQDEBREATH_APP_BRIDGE_VERSION + " | Click waveform: internal preview seek; Global EQ/Gain = all Breath; Breath Adjust = selected Breath; Shift+drag: create/replace.",
+        ? juce::String(QQDEBREATH_PLUGIN_VERSION) + " | " + QQDEBREATH_APP_BRIDGE_VERSION + " | Click: move playhead; Drag region: move; Drag edge: resize; Shift+drag: create/replace; Ctrl+Z/Ctrl+Shift+Z: Undo/Redo; Right-click: Breath/Noize; Delete: remove."
+        : juce::String(QQDEBREATH_PLUGIN_VERSION) + " | " + QQDEBREATH_APP_BRIDGE_VERSION + " | Click: preview seek; Drag region: move; Drag edge: resize; Shift+drag: create/replace; Ctrl+Z/Ctrl+Shift+Z: Undo/Redo; Global EQ/Gain = all Breath.",
         juce::dontSendNotification);
 
     refreshBreathDetailControlsVisibility();
@@ -1908,7 +1964,7 @@ void QQDeBreathAudioProcessorEditor::applyBreathEqPreviewToWaveform()
 void QQDeBreathAudioProcessorEditor::saveCurrentGlobalDefaults()
 {
     auto root = std::make_unique<juce::DynamicObject>();
-    root->setProperty("schema_version", 1);
+    root->setProperty("schema_version", 2);
     root->setProperty("monitor_voice", boolVar(monitorVoiceButton.getToggleState()));
     root->setProperty("monitor_breath", boolVar(monitorBreathButton.getToggleState()));
     root->setProperty("monitor_noize", boolVar(monitorNoizeButton.getToggleState()));
@@ -1919,8 +1975,10 @@ void QQDeBreathAudioProcessorEditor::saveCurrentGlobalDefaults()
     root->setProperty("breath_norm", boolVar(breathNormButton.getToggleState()));
     root->setProperty("breath_target_db", doubleVar(breathTargetSlider.getValue()));
     root->setProperty("global_gain_db", doubleVar(breathGainSlider.getValue()));
-    root->setProperty("global_auto_apply", boolVar(breathEqAutoApplyButton.getToggleState()));
-    root->setProperty("selected_auto_apply", boolVar(breathDetailAutoApplyButton.getToggleState()));
+    const auto autoApply = breathEqAutoApplyButton.getToggleState();
+    root->setProperty("auto_apply", boolVar(autoApply));
+    root->setProperty("global_auto_apply", boolVar(autoApply));
+    root->setProperty("selected_auto_apply", boolVar(autoApply));
     root->setProperty("global_eq", serializeBreathEqState(audioProcessor.getBreathEqState()));
 
     const auto file = globalDefaultsFile();
@@ -1979,8 +2037,8 @@ void QQDeBreathAudioProcessorEditor::applyGlobalDefaultsFromValue(const juce::va
     breathNormButton.setToggleState(boolProp("breath_norm", false), juce::sendNotificationSync);
     breathTargetSlider.setValue(juce::jlimit(-80.0, 0.0, doubleProp("breath_target_db", -6.0)), juce::sendNotificationSync);
     breathGainSlider.setValue(juce::jlimit(-60.0, 30.0, doubleProp("global_gain_db", 0.0)), juce::sendNotificationSync);
-    breathEqAutoApplyButton.setToggleState(boolProp("global_auto_apply", true), juce::dontSendNotification);
-    breathDetailAutoApplyButton.setToggleState(boolProp("selected_auto_apply", true), juce::dontSendNotification);
+    const auto legacyAutoApply = boolProp("global_auto_apply", boolProp("selected_auto_apply", true));
+    setAutoApplyEnabled(boolProp("auto_apply", legacyAutoApply), false);
 
     QQDeBreathEqState eq;
     if (deserializeBreathEqState(value.getProperty("global_eq", {}).toString(), eq))

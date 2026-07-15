@@ -16,6 +16,7 @@ public:
 
     void paint(juce::Graphics& g) override;
     void resized() override;
+    bool keyPressed(const juce::KeyPress& key) override;
 
 private:
     enum class SourceMode
@@ -191,6 +192,9 @@ private:
     void showMainPage();
     void showBreathEqPage();
     void showBreathDetailPage();
+    void performUndo();
+    void performRedo();
+    void setAutoApplyEnabled(bool enabled, bool applyPendingPreview);
     void setMainPageComponentsVisible(bool visible);
     void setBreathEqEnabled(bool enabled);
     void applyBreathEqStateFromUi(const QQDeBreathEqState& state);

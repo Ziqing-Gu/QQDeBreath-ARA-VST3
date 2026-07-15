@@ -1,0 +1,10 @@
+QQDeBreath ARA/VST3/AU 1.13
+Date: 2026-07-16
+
+- Added Ctrl+Z and Ctrl+Shift+Z region Undo/Redo shortcuts.
+- Global and Selected Auto Apply now share one synchronized preference.
+- ARA and VST3 editors are resizable up to the host/screen limits.
+- Narrow editor layouts wrap the selected-Breath/export controls to a second toolbar row.
+- Breath and Noize regions can be moved by dragging their body with the left mouse button.
+- Region movement remains constrained by adjacent regions and participates in Undo/Redo.
+- Native C++ analyzer, model data, rendering, and stem export are unchanged.

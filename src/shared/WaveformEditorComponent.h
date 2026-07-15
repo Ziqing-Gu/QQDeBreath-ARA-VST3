@@ -65,6 +65,7 @@ private:
     {
         none,
         create,
+        move,
         resizeStart,
         resizeEnd
     };
@@ -138,6 +139,11 @@ private:
     DragMode dragMode = DragMode::none;
     double createStart = 0.0;
     double createEnd = 0.0;
+    int moveRegion = -1;
+    double moveAnchorTime = 0.0;
+    double moveOriginalStart = 0.0;
+    double moveOriginalEnd = 0.0;
+    bool moveUndoPushed = false;
     int resizeRegion = -1;
     bool deferredRegionDisplayRebuild = false;
 

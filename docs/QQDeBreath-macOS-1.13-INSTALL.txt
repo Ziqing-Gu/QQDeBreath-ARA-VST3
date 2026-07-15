@@ -1,0 +1,59 @@
+QQDeBreath 1.13 - macOS VST3 / AU installation guide
+=====================================================
+
+PACKAGE CHOICE
+--------------
+
+1. QQDeBreath-macOS-Apple-Silicon-1.13.zip
+   VST3 for Apple Silicon Macs (M1/M2/M3/M4 and later).
+
+2. QQDeBreath-macOS-Intel-1.13.zip
+   VST3 for Intel Macs.
+
+3. QQDeBreath-macOS-AU-Universal-1.13.zip
+   Universal 2 Audio Unit for Logic Pro. It contains arm64 and x86_64.
+
+INSTALL LOCATIONS
+-----------------
+
+Copy QQDeBreath.vst3 to:
+  /Library/Audio/Plug-Ins/VST3/
+
+Copy QQDeBreath.component to:
+  /Library/Audio/Plug-Ins/Components/
+
+LOGIC PRO / ARA 2
+-----------------
+
+Logic Pro does not load VST3. Install QQDeBreath.component instead.
+Insert QQDeBreath in the first Audio Effect slot to use ARA mode.
+
+On Apple Silicon, Apple currently requires Logic Pro to run with Rosetta for
+third-party ARA plug-ins. Quit Logic, open Applications, select Logic Pro,
+choose Get Info, enable Open using Rosetta, then reopen Logic.
+
+FIRST LAUNCH SECURITY NOTICE
+----------------------------
+
+These free test builds are ad-hoc signed, not Developer ID signed/notarized.
+If macOS blocks QQDeBreath during the first scan:
+
+1. Trigger one plug-in scan in the DAW.
+2. Open System Settings > Privacy & Security.
+3. Find the QQDeBreath warning and click Open Anyway.
+4. Enter the Mac login password and confirm.
+5. Restart the DAW and rescan/reactivate QQDeBreath.
+
+Trusted-source fallback commands:
+
+  sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/VST3/QQDeBreath.vst3"
+  sudo xattr -dr com.apple.quarantine "/Library/Audio/Plug-Ins/Components/QQDeBreath.component"
+
+Only run these commands for the archive downloaded from the official
+QQDeBreath GitHub repository.
+
+HOST SUMMARY
+------------
+
+Cubase / Nuendo / REAPER / Studio One: VST3
+Logic Pro:                              AU component

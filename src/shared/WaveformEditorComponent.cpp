@@ -532,6 +532,18 @@ void QQDeBreathWaveformEditor::mouseDown(const juce::MouseEvent& event)
     if (event.mods.isLeftButtonDown() && ! event.mods.isPopupMenu())
     {
         const auto time = xToTime(event.x);
+
+        if (hit >= 0)
+        {
+            const auto& region = regions.getReference(hit);
+            dragMode = DragMode::move;
+            moveRegion = hit;
+            moveAnchorTime = time;
+            moveOriginalStart = region.startTime;
+            moveOriginalEnd = region.endTime;
+            moveUndoPushed = false;
+        }
+
         setPlayheadSeconds(time);
         if (onSeekRequested)
             onSeekRequested(time);
@@ -558,6 +570,35 @@ void QQDeBreathWaveformEditor::mouseDrag(const juce::MouseEvent& event)
     {
         createEnd = xToTime(event.x);
         repaint();
+    }
+    else if (dragMode == DragMode::move && moveRegion >= 0 && moveRegion < regions.size())
+    {
+        const auto duration = moveOriginalEnd - moveOriginalStart;
+        const auto previousEnd = moveRegion > 0 ? regions.getReference(moveRegion - 1).endTime : 0.0;
+        const auto nextStart = moveRegion + 1 < regions.size()
+                             ? regions.getReference(moveRegion + 1).startTime
+                             : getTimelineDurationSeconds();
+        const auto latestStart = juce::jmax(previousEnd, nextStart - duration);
+        const auto proposedStart = moveOriginalStart + xToTime(event.x) - moveAnchorTime;
+        const auto newStart = juce::jlimit(previousEnd, latestStart, proposedStart);
+        const auto newEnd = newStart + duration;
+        auto& region = regions.getReference(moveRegion);
+
+        if (! moveUndoPushed && std::abs(newStart - region.startTime) > 1.0e-9)
+        {
+            pushUndoState();
+            moveUndoPushed = true;
+        }
+
+        if (moveUndoPushed)
+        {
+            region.startTime = newStart;
+            region.endTime = newEnd;
+            region.startSample = sampleRate > 0.0 ? static_cast<juce::int64>(std::round(newStart * sampleRate)) : region.startSample;
+            region.endSample = sampleRate > 0.0 ? static_cast<juce::int64>(std::round(newEnd * sampleRate)) : region.endSample;
+            deferredRegionDisplayRebuild = true;
+            repaint();
+        }
     }
     else if ((dragMode == DragMode::resizeStart || dragMode == DragMode::resizeEnd)
           && resizeRegion >= 0
@@ -601,6 +642,12 @@ void QQDeBreathWaveformEditor::mouseUp(const juce::MouseEvent& /*event*/)
         }
     }
 
+    if (dragMode == DragMode::move && moveUndoPushed)
+    {
+        deferredRegionDisplayRebuild = false;
+        notifyRegionsChanged();
+    }
+
     if (dragMode == DragMode::resizeStart || dragMode == DragMode::resizeEnd)
     {
         deferredRegionDisplayRebuild = false;
@@ -608,6 +655,8 @@ void QQDeBreathWaveformEditor::mouseUp(const juce::MouseEvent& /*event*/)
     }
 
     dragMode = DragMode::none;
+    moveRegion = -1;
+    moveUndoPushed = false;
     resizeRegion = -1;
     repaint();
 }
@@ -714,6 +763,8 @@ void QQDeBreathWaveformEditor::updateMouseCursor(int x)
 {
     if (hitTestRegionStartEdge(x) >= 0 || hitTestRegionEndEdge(x) >= 0)
         setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    else if (hitTestRegion(x) >= 0)
+        setMouseCursor(juce::MouseCursor::DraggingHandCursor);
     else
         setMouseCursor(juce::MouseCursor::NormalCursor);
 }
