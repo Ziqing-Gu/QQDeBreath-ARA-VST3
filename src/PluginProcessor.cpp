@@ -16,14 +16,6 @@ constexpr double maxTimelineGapToFillSeconds = 60.0 * 30.0;
 constexpr double initialRecordCapacitySeconds = 300.0;
 constexpr double recordCapacityGrowSeconds = 300.0;
 
-float getBufferMagnitude(const juce::AudioBuffer<float>& buffer)
-{
-    auto magnitude = 0.0f;
-    for (auto channel = 0; channel < buffer.getNumChannels(); ++channel)
-        magnitude = juce::jmax(magnitude, buffer.getMagnitude(channel, 0, buffer.getNumSamples()));
-
-    return magnitude;
-}
 
 juce::String fnv1a64(const juce::String& text)
 {
@@ -521,15 +513,17 @@ public:
                 continue;
             const auto& state = sourceCache.state;
             const auto hasState = sourceCache.hasState;
+            const auto& params = cachedPlaybackParams;
 
             if (! hasState)
             {
-                for (auto channel = 0; channel < buffer.getNumChannels(); ++channel)
-                    buffer.addFrom(channel, destOffset, tempBuffer, juce::jmin(channel, tempBuffer.getNumChannels() - 1), 0, numSamples);
+                // Before analysis, the whole source is Voice and must obey its monitor switch.
+                if (params.monitorVoice)
+                    for (auto channel = 0; channel < buffer.getNumChannels(); ++channel)
+                        buffer.addFrom(channel, destOffset, tempBuffer, juce::jmin(channel, tempBuffer.getNumChannels() - 1), 0, numSamples);
                 continue;
             }
 
-            const auto& params = cachedPlaybackParams;
             const auto fadeInSamples = params.enableFade ? static_cast<int>(std::llround(params.fadeInMs * sourceSampleRate / 1000.0)) : 0;
             const auto fadeOutSamples = params.enableFade ? static_cast<int>(std::llround(params.fadeOutMs * sourceSampleRate / 1000.0)) : 0;
             const auto breathTargetGain = dbToGain(params.breathTargetDb);
@@ -841,7 +835,6 @@ QQDeBreathAudioProcessor::QQDeBreathAudioProcessor()
 void QQDeBreathAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     prepareToPlayForARA(sampleRate, samplesPerBlock, getMainBusNumOutputChannels(), getProcessingPrecision());
-    araDryBuffer.setSize(getMainBusNumOutputChannels(), samplesPerBlock);
     previewBreathBuffer.setSize(getMainBusNumOutputChannels(), samplesPerBlock);
 
     const juce::ScopedLock lock(recordedBufferLock);
@@ -888,23 +881,8 @@ void QQDeBreathAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, ju
         }
     }
 
-    if (araDryBuffer.getNumChannels() != buffer.getNumChannels() || araDryBuffer.getNumSamples() < buffer.getNumSamples())
-        araDryBuffer.setSize(buffer.getNumChannels(), buffer.getNumSamples(), false, false, true);
-
-    const auto inputMagnitude = getBufferMagnitude(buffer);
-    if (inputMagnitude > 0.000001f)
-        araDryBuffer.makeCopyOf(buffer, true);
-
     if (processBlockForARA(buffer, isRealtime(), playHead))
-    {
-        if (inputMagnitude > 0.000001f && getBufferMagnitude(buffer) <= 0.000001f)
-        {
-            for (auto channel = 0; channel < buffer.getNumChannels(); ++channel)
-                buffer.copyFrom(channel, 0, araDryBuffer, channel, 0, buffer.getNumSamples());
-        }
-
         return;
-    }
 
     const auto armed = recordArmed.load(std::memory_order_acquire);
     const auto wasRecording = recording.load(std::memory_order_acquire);

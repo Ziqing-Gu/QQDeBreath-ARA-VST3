@@ -1,0 +1,9 @@
+QQDeBreath ARA/VST3/AU 1.14
+Date: 2026-07-19
+
+- Ported the proven QQEasyTool ARA monitoring hotfix.
+- Removed block-level dry restoration after legitimate ARA silence.
+- Unanalysed ARA sources now obey the Voice monitor switch.
+- Composite ARA source state is retained even for zero-region events.
+- Clear Analysis clears mapped persistent and realtime state.
+- Native C++ analysis, model data, EQ, Fade, Gain, and stem export are unchanged.

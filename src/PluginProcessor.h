@@ -163,7 +163,6 @@ private:
     std::atomic<double> internalPreviewAnchorHostSeconds { 0.0 };
     std::atomic<double> internalPreviewLoopStartSeconds { 0.0 };
     std::atomic<double> internalPreviewLoopEndSeconds { 0.0 };
-    juce::AudioBuffer<float> araDryBuffer;
     juce::AudioBuffer<float> previewBreathBuffer;
     QQDeBreathEqProcessor vst3BreathEqProcessor;
     QQDeBreathEqProcessor vst3RegionEqProcessor;

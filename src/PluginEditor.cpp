@@ -1579,7 +1579,7 @@ void QQDeBreathAudioProcessorEditor::persistAraState()
 
 void QQDeBreathAudioProcessorEditor::persistAraMappedSourceStates(const QQDeBreathBridgeAnalysisResult& result)
 {
-    if (! result.hasResult || araSourceInfo.playbackMappings.isEmpty())
+    if (araSourceInfo.playbackMappings.isEmpty())
         return;
 
     auto* documentController = getAraDocumentController();
@@ -1636,9 +1636,6 @@ void QQDeBreathAudioProcessorEditor::persistAraMappedSourceStates(const QQDeBrea
                 ++mappedResult.noizeCount;
         }
 
-        if (mappedResult.regions.isEmpty())
-            continue;
-
         QQDeBreathARASourceInfo sourceInfo;
         sourceInfo.name = mapping.sourceName;
         sourceInfo.persistentId = mapping.persistentId;
@@ -1672,7 +1669,7 @@ void QQDeBreathAudioProcessorEditor::updateAraRuntimeState()
 
 void QQDeBreathAudioProcessorEditor::updateAraRuntimeMappedSourceStates(const QQDeBreathBridgeAnalysisResult& result)
 {
-    if (! result.hasResult || araSourceInfo.playbackMappings.isEmpty())
+    if (araSourceInfo.playbackMappings.isEmpty())
         return;
 
     auto* documentController = getAraDocumentController();

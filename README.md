@@ -1,6 +1,6 @@
 # QQDeBreath ARA/VST3/AU Plugin
 
-Current plugin version: `ARA 1.13`
+Current plugin version: `ARA 1.14`
 
 This plugin is the current QQDeBreath ARA/VST3/AU interactive prototype. It
 uses one shared processor and editor implementation to produce:
@@ -10,6 +10,15 @@ uses one shared processor and editor implementation to produce:
 - ARA 2 Audio Unit for Logic Pro on macOS.
 
 感谢网友 Jason 提供训练样本并参与测试。
+
+## Version 1.14 Update
+
+- Ported the proven QQEasyTool ARA monitoring hotfix back to QQDeBreath.
+- Removed block-level dry restoration after legitimate ARA silence.
+- Unanalysed ARA sources are treated as Voice and obey the Voice monitor switch.
+- Composite ARA events now persist state even when an event has no detected region.
+- Clear Analysis also clears mapped persistent and realtime source state.
+- The native analyzer, embedded model, EQ DSP, fades, Gain, and stem export are unchanged.
 
 ## Version 1.13 Update
 
@@ -31,7 +40,7 @@ uses one shared processor and editor implementation to produce:
 
 ## Analysis Backend
 
-ARA 1.13 contains the Breath detection path in native C++ and retains the
+ARA 1.14 contains the Breath detection path in native C++ and retains the
 multi-event ARA Load, dynamic Pre/Post spectrum, loop preview, Global Gain,
 Set as Default, and per-Breath Adjust/EQ workflow. Its ARA playback renderer
 is revised for Reaper: persistent state and playback parameters are revision
@@ -131,7 +140,7 @@ Per-Breath Adjust/EQ:
 
 ## Important Notes
 
-- Breath analysis is native C++ in ARA 1.13.
+- Breath analysis is native C++ in ARA 1.14.
 - C++ region output was compared against the Python 1.11 implementation on
   representative vocal samples.
 - Noize remains a first-class manual region type in the UI and renderer.
