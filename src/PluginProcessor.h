@@ -110,6 +110,11 @@ public:
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
     bool hasRestoredStateInformation() const noexcept { return restoredStateInformation.load(std::memory_order_acquire); }
+    bool claimInitialGlobalDefaultsApplication() noexcept
+    {
+        auto expected = false;
+        return globalDefaultsApplicationClaimed.compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+    }
 
     void startRecording();
     void stopRecording();
@@ -156,6 +161,7 @@ private:
     std::atomic<bool> recordArmed { false };
     std::atomic<bool> recording { false };
     std::atomic<bool> restoredStateInformation { false };
+    std::atomic<bool> globalDefaultsApplicationClaimed { false };
     std::atomic<int> droppedRecordBlocks { 0 };
     std::atomic<bool> internalPreviewActive { false };
     std::atomic<bool> internalPreviewLoopEnabled { false };

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(QQDeBreath VERSION 1.0.14 LANGUAGES CXX)
+project(QQDeBreath VERSION 1.0.15 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,6 +35,12 @@ if(EXISTS "${QQDEBREATH_ARA_SDK_PATH}/ARA_API/ARAVST3.h")
     juce_set_ara_sdk_path("${QQDEBREATH_ARA_SDK_PATH}")
 else()
     message(WARNING "ARA SDK not found at QQDEBREATH_ARA_SDK_PATH='${QQDEBREATH_ARA_SDK_PATH}'. Unified QQDeBreath ARA support requires the ARA SDK.")
+endif()
+
+if(EXISTS "${QQDEBREATH_ARA_SDK_PATH}/ARA_Library/CMakeLists.txt" AND NOT TARGET ARA_PlugIn_Library)
+    add_subdirectory("${QQDEBREATH_ARA_SDK_PATH}/ARA_Library"
+                     "${CMAKE_CURRENT_BINARY_DIR}/ARA_Library"
+                     EXCLUDE_FROM_ALL)
 endif()
 
 set(QQDEBREATH_PLUGIN_FORMATS VST3)
@@ -156,4 +162,28 @@ target_link_libraries(qq_debreath_native_probe
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags
+)
+add_executable(qq_debreath_editor_state_probe
+    tests/EditorStateProbe.cpp
+)
+
+target_include_directories(qq_debreath_editor_state_probe
+    PRIVATE
+        src
+)
+
+target_compile_features(qq_debreath_editor_state_probe PRIVATE cxx_std_17)
+
+if(MSVC)
+    target_compile_options(qq_debreath_editor_state_probe PRIVATE /utf-8)
+    target_link_options(qq_debreath_editor_state_probe PRIVATE /ENTRY:wmainCRTStartup)
+endif()
+
+target_link_libraries(qq_debreath_editor_state_probe
+    PRIVATE
+        QQDeBreath
+        ARA_PlugIn_Library
+        juce::juce_audio_plugin_client
+        juce::juce_audio_utils
+        juce::juce_dsp
 )

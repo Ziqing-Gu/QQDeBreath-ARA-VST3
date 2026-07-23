@@ -395,7 +395,7 @@ QQDeBreathAudioProcessorEditor::QQDeBreathAudioProcessorEditor(QQDeBreathAudioPr
     addAndMakeVisible(titleLabel);
     titleLabel.setVisible(false);
 
-    phaseLabel.setText("QQDeBreath ARA 1.13 Native + Global/Selected Breath EQ", juce::dontSendNotification);
+    phaseLabel.setText("QQDeBreath ARA 1.15 Native + Global/Selected Breath EQ", juce::dontSendNotification);
     phaseLabel.setJustificationType(juce::Justification::centred);
     phaseLabel.setColour(juce::Label::textColourId, juce::Colour(0xffcbd5e1));
     phaseLabel.setFont(juce::Font(18.0f, juce::Font::plain));
@@ -1992,6 +1992,11 @@ void QQDeBreathAudioProcessorEditor::applySavedGlobalDefaultsIfFreshInstance()
         return;
 
     attemptedGlobalDefaultsLoad = true;
+
+    // The processor outlives editor windows. Claim this once per plugin instance
+    // so reopening the same editor cannot overwrite its live APVTS state with defaults.
+    if (! audioProcessor.claimInitialGlobalDefaultsApplication())
+        return;
 
     auto araHasProjectState = false;
     if (auto* documentController = getAraDocumentController())

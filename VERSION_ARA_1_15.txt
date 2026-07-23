@@ -1,0 +1,6 @@
+QQDeBreath ARA/VST3/AU 1.15
+Date: 2026-07-23
+
+- Fixed Breath Norm and Target values resetting after closing and reopening the same plugin editor.
+- Global defaults are applied only once during each plugin instance lifetime.
+- Existing DAW project state, Set as Default behavior, analysis, DSP, EQ, and export behavior are unchanged.
